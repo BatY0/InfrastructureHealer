@@ -121,9 +121,18 @@ async def chat_endpoint(request: ChatRequest):
 
 @app.post("/api/command/execute")
 async def execute_command(request: ExecuteRequest):
+    # Safety Check: Enforce kubectl and block dangerous shell characters
+    cmd = request.command.strip()
+    if not cmd.startswith("kubectl "):
+        return {"output": "", "error": "Error: Only 'kubectl' commands are permitted in this sandbox.", "returncode": 1}
+    
+    dangerous_chars = ["|", ";", "&", ">", "<", "$"]
+    if any(char in cmd for char in dangerous_chars):
+        return {"output": "", "error": "Error: Shell piping and chaining are not permitted.", "returncode": 1}
+
     try:
         result = subprocess.run(
-            request.command, shell=True, capture_output=True, text=True, timeout=30
+            cmd, shell=True, capture_output=True, text=True, timeout=30
         )
         # Log the executed command to the event stream
         chaos_injector.state.add_event(f"$ {request.command}")

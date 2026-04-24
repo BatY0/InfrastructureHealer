@@ -177,7 +177,7 @@ SCENARIOS = {
         "yaml": OOM_YAML,
         "pod_names": ["memory-hog"],
         "kind": "pod",
-        "briefing": "Hey! It looks like an OOM (Out of Memory) incident just triggered. I'm seeing a pod called `memory-hog` that might be crashing because it's eating up too much RAM. What should we do to investigate this?"
+        "briefing": "Hey junior. Looks like an OOM (Out of Memory) incident just triggered. I'm seeing a pod called `memory-hog` that might be crashing because it's eating up too much RAM. You take point on this. What's your first move?"
     },
     "connection-leak": {
         "name": "The Connection Leak",
@@ -188,7 +188,7 @@ SCENARIOS = {
         "yaml": CONNECTION_LEAK_YAML,
         "pod_names": ["connection-leaker"],
         "kind": "pod",
-        "briefing": "Hi there! I just noticed a connection leak scenario starting up. We have a pod named `connection-leaker` that might be leaving sockets open and eating up all the available connections. How do you want to handle this?"
+        "briefing": "Hi there. I just noticed a connection leak scenario starting up. We have a pod named `connection-leaker` that might be leaving sockets open and eating up all the available connections. It's your turn to debug. How do you want to handle this?"
     },
     "zombie": {
         "name": "The Zombie Apocalypse",
@@ -199,7 +199,7 @@ SCENARIOS = {
         "yaml": ZOMBIE_YAML,
         "pod_names": ["zombie-factory"],
         "kind": "pod",
-        "briefing": "Uh oh, a zombie apocalypse scenario just fired off. There's a pod called `zombie-factory` that's probably spawning a bunch of defunct processes and filling up the PID table. We need to investigate this before it starves the whole node. What's our first move?"
+        "briefing": "Uh oh, a zombie apocalypse scenario just fired off. There's a pod called `zombie-factory` that's probably spawning a bunch of defunct processes and filling up the PID table. We need to investigate this before it starves the whole node. Show me what you've got."
     },
     "poisoned-update": {
         "name": "The Poisoned Update",

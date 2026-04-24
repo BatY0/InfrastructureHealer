@@ -17,10 +17,6 @@ interface Message {
   content: string
 }
 
-interface PendingAction {
-  command: string
-  answer: string
-}
 
 interface ScenarioMeta {
   key: string
@@ -85,7 +81,6 @@ export default function App() {
   })
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
-  const [pending, setPending] = useState<PendingAction | null>(null)
   const [loading, setLoading] = useState(false)
   const [postMortem, setPostMortem] = useState<PostMortem | null>(null)
   const [approvedCount, setApprovedCount] = useState(0)
@@ -113,7 +108,7 @@ export default function App() {
     return () => clearInterval(id)
   }, [clusterStatus.active])
 
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, pending, loading])
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, loading])
   useEffect(() => { logEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [clusterStatus.events])
 
   const injectChaos = async () => {
@@ -137,13 +132,6 @@ export default function App() {
           role: 'assistant',
           content: stripThinking(data.briefing.answer),
         })
-
-        // If it also requires an action (like running a command), trigger the HITL gate
-        if (data.briefing.type === 'action_required') {
-          // We set the pending answer to empty here because the briefing text 
-          // is already safely recorded in the main chat log above.
-          setPending({ command: data.briefing.command, answer: "" })
-        }
       }
 
       setMessages(initMessages)
@@ -165,66 +153,58 @@ export default function App() {
   }
 
   const sendMessage = async () => {
-    if (!input.trim() || loading || pending) return
-    const userMsg: Message = { role: 'user', content: input }
-    const next = [...messages, userMsg]
-    setMessages(next); setInput(''); setLoading(true)
-    try {
-      const history = next.filter(m => m.role !== 'system').map(m => ({ role: m.role, content: m.content }))
-      const res = await fetch(`${API}/api/chat`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ history }),
-      })
-      const data = await res.json()
-      if (data.type === 'action_required') {
-        setPending({ command: data.command, answer: stripThinking(data.answer) })
-      } else {
-        setMessages(p => [...p, { role: 'assistant', content: stripThinking(data.answer) }])
-      }
-    } catch (e) { console.error(e) } finally { setLoading(false) }
-  }
+    if (!input.trim() || loading) return
+    const cmd = input.trim()
+    setInput(''); setLoading(true)
 
-  const handleAction = async (approved: boolean) => {
-    if (!pending) return
-    const action = pending; setPending(null); setLoading(true)
-    if (approved) {
-      setApprovedCount(c => c + 1)
-      const newMessages: Message[] = []
-      if (action.answer) {
-        newMessages.push({ role: 'assistant', content: stripThinking(action.answer) })
-      }
-      newMessages.push({ role: 'system', content: `$ ${action.command}` })
-      
-      setMessages(p => [...p, ...newMessages])
+    if (cmd.toLowerCase() === 'clear') {
+      setMessages([])
+      setLoading(false)
+      return
+    }
+
+    if (cmd.startsWith('kubectl ')) {
+      // Execute command directly
+      const userMsg: Message = { role: 'user', content: `$ ${cmd}` }
+      setMessages(p => [...p, userMsg])
       try {
         const res = await fetch(`${API}/api/command/execute`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command: action.command }),
+          body: JSON.stringify({ command: cmd }),
         })
         const data = await res.json()
         const out = data.output || data.error || '(no output)'
         setMessages(p => [...p, { role: 'system', content: out }])
-        const history = [
-          ...messages,
-          { role: 'assistant', content: action.answer },
-          { role: 'user', content: `Command output:\n${out}` },
-        ].filter(m => m.role !== 'system').map(m => ({ role: m.role, content: m.content }))
-        const nextRes = await fetch(`${API}/api/chat`, {
+      } catch (e) {
+        setMessages(p => [...p, { role: 'system', content: `Error: Cannot reach backend` }])
+      } finally {
+        setLoading(false)
+      }
+    } else {
+      // Send chat to AI Supervisor
+      const userMsg: Message = { role: 'user', content: `> ${cmd}` }
+      const next = [...messages, userMsg]
+      setMessages(next)
+      try {
+        // Map history: system messages (terminal output) become user messages so the AI can read them
+        const history = next.map(m => {
+          if (m.role === 'system') {
+            return { role: 'user', content: `[Terminal Output]:\n${m.content}` }
+          }
+          return m
+        })
+        const res = await fetch(`${API}/api/chat`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ history }),
         })
-        const nextData = await nextRes.json()
-        if (nextData.type === 'action_required') {
-          setPending({ command: nextData.command, answer: stripThinking(nextData.answer) })
-        } else {
-          setMessages(p => [...p, { role: 'assistant', content: stripThinking(nextData.answer) }])
-        }
-      } catch (e) { console.error(e) }
-    } else {
-      setRejectedCount(c => c + 1)
-      setMessages(p => [...p, { role: 'system', content: '⛔ Command rejected by student.' }])
+        const data = await res.json()
+        setMessages(p => [...p, { role: 'assistant', content: stripThinking(data.answer) }])
+      } catch (e) {
+        setMessages(p => [...p, { role: 'system', content: `Error: Cannot reach backend` }])
+      } finally {
+        setLoading(false)
+      }
     }
-    setLoading(false)
   }
 
   const score = postMortem
@@ -329,14 +309,9 @@ export default function App() {
                 <p>Select a scenario, inject an outage, then ask me to investigate.</p>
               </div>
             )}
-            {messages.map((m, i) => (
-              <div key={i} className={`msg-row ${m.role === 'user' ? 'msg-row--right' : 'msg-row--left'}`}>
-                <div className={`msg-bubble ${
-                  m.role === 'user' ? 'bubble-user' :
-                  m.role === 'system' ? 'bubble-system' : 'bubble-agent'
-                }`}>
-                  {m.content}
-                </div>
+            {messages.map((msg, idx) => (
+              <div key={idx} className={`terminal-line terminal-${msg.role}`}>
+                {msg.content}
               </div>
             ))}
             {loading && (
@@ -349,39 +324,17 @@ export default function App() {
             <div ref={chatEndRef} />
           </div>
 
-          {/* HITL Confirmation Gate */}
-          {pending && (
-            <div className="hitl-gate">
-              <div className="hitl-header">
-                <span>⚠️</span>
-                <h3>Agent Action Pending — Your Approval Required</h3>
-              </div>
-              {pending.answer && (
-                <div className="hitl-answer">
-                  <p>{pending.answer}</p>
-                </div>
-              )}
-              <div className="hitl-command">
-                <span className="cmd-prompt">$</span>
-                <code>{pending.command}</code>
-              </div>
-              <div className="hitl-actions">
-                <button className="btn btn-approve" onClick={() => handleAction(true)}>✅ Approve & Execute</button>
-                <button className="btn btn-reject" onClick={() => handleAction(false)}>⛔ Reject</button>
-              </div>
-            </div>
-          )}
-
           <form className="chat-input-row" onSubmit={e => { e.preventDefault(); sendMessage() }}>
+            <span className="cmd-prompt">$</span>
             <input
               type="text"
               value={input}
               onChange={e => setInput(e.target.value)}
-              placeholder={clusterStatus.active ? "Ask the agent to investigate..." : "Inject a scenario first..."}
-              disabled={loading || !!pending}
-              className="chat-input"
+              placeholder={clusterStatus.active ? "Type 'kubectl get pods' or ask your supervisor..." : "Start an incident to begin..."}
+              disabled={loading}
+              className="chat-input terminal-input"
+              autoFocus
             />
-            <button type="submit" disabled={loading || !!pending || !input.trim()} className="btn btn-send">Send</button>
           </form>
         </main>
 
