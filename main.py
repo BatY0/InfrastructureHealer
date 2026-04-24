@@ -63,28 +63,18 @@ async def chaos_inject(request: ChaosInjectRequest):
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    # Automatically get an initial briefing from the agent so the student
-    # immediately knows what broke and what to investigate — no first message needed.
+    # Return the static briefing text so the student gets instant context
+    # without waiting for a slow LLM generation.
     try:
-        status = chaos_injector.get_status()
         meta = chaos_injector.SCENARIOS[request.scenario]
-        scenario_context = (
-            f"ACTIVE INCIDENT: {meta['name']}\n"
-            f"Description: {meta['description']}\n"
-            f"Learning objective: {meta['learning']}\n"
-            f"The workload was just deployed. Initial pod states may still be Pending."
-        )
-        briefing_prompt = (
-            "A new incident has just been triggered in the cluster. "
-            "Introduce yourself briefly, describe what this incident is, "
-            "what symptoms the student should expect to see, and what the first "
-            "diagnostic step is. Be concise — 3 to 4 sentences max."
-        )
-        briefing = agent.generate_response(
-            [{"role": "user", "content": briefing_prompt}],
-            scenario_context=scenario_context,
-        )
-        result["briefing"] = briefing
+        
+        # We mimic the agent response dictionary structure so the frontend
+        # can just render it normally as a chat message.
+        result["briefing"] = {
+            "type": "message",
+            "thought": "",
+            "answer": meta["briefing"]
+        }
     except Exception:
         result["briefing"] = None
 

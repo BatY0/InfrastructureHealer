@@ -15,12 +15,10 @@ function stripThinking(text: string): string {
 interface Message {
   role: 'user' | 'assistant' | 'system'
   content: string
-  thought?: string
 }
 
 interface PendingAction {
   command: string
-  thought: string
   answer: string
 }
 
@@ -133,13 +131,19 @@ export default function App() {
         { role: 'system', content: `🚨 Incident injected: ${data.scenario}. The agent is analyzing the situation...` }
       ]
 
-      // If the backend returned an auto-briefing, add it as the agent's first message
-      if (data.briefing?.answer) {
+      // If the backend returned an auto-briefing, we always push the text to the chat history
+      if (data.briefing) {
         initMessages.push({
           role: 'assistant',
-          content: data.briefing.answer,
-          thought: data.briefing.thought || undefined,
+          content: stripThinking(data.briefing.answer),
         })
+
+        // If it also requires an action (like running a command), trigger the HITL gate
+        if (data.briefing.type === 'action_required') {
+          // We set the pending answer to empty here because the briefing text 
+          // is already safely recorded in the main chat log above.
+          setPending({ command: data.briefing.command, answer: "" })
+        }
       }
 
       setMessages(initMessages)
@@ -173,9 +177,9 @@ export default function App() {
       })
       const data = await res.json()
       if (data.type === 'action_required') {
-        setPending({ ...data, answer: stripThinking(data.answer) })
+        setPending({ command: data.command, answer: stripThinking(data.answer) })
       } else {
-        setMessages(p => [...p, { role: 'assistant', content: stripThinking(data.answer), thought: data.thought }])
+        setMessages(p => [...p, { role: 'assistant', content: stripThinking(data.answer) }])
       }
     } catch (e) { console.error(e) } finally { setLoading(false) }
   }
@@ -185,10 +189,13 @@ export default function App() {
     const action = pending; setPending(null); setLoading(true)
     if (approved) {
       setApprovedCount(c => c + 1)
-      setMessages(p => [...p,
-        { role: 'assistant', content: stripThinking(action.answer), thought: action.thought },
-        { role: 'system', content: `$ ${action.command}` },
-      ])
+      const newMessages: Message[] = []
+      if (action.answer) {
+        newMessages.push({ role: 'assistant', content: stripThinking(action.answer) })
+      }
+      newMessages.push({ role: 'system', content: `$ ${action.command}` })
+      
+      setMessages(p => [...p, ...newMessages])
       try {
         const res = await fetch(`${API}/api/command/execute`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -208,9 +215,9 @@ export default function App() {
         })
         const nextData = await nextRes.json()
         if (nextData.type === 'action_required') {
-          setPending({ ...nextData, answer: stripThinking(nextData.answer) })
+          setPending({ command: nextData.command, answer: stripThinking(nextData.answer) })
         } else {
-          setMessages(p => [...p, { role: 'assistant', content: stripThinking(nextData.answer), thought: nextData.thought }])
+          setMessages(p => [...p, { role: 'assistant', content: stripThinking(nextData.answer) }])
         }
       } catch (e) { console.error(e) }
     } else {
@@ -324,12 +331,6 @@ export default function App() {
             )}
             {messages.map((m, i) => (
               <div key={i} className={`msg-row ${m.role === 'user' ? 'msg-row--right' : 'msg-row--left'}`}>
-                {m.thought && (
-                  <div className="thought-bubble">
-                    <span className="thought-label">🤔 Agent Thinking</span>
-                    <p>{m.thought}</p>
-                  </div>
-                )}
                 <div className={`msg-bubble ${
                   m.role === 'user' ? 'bubble-user' :
                   m.role === 'system' ? 'bubble-system' : 'bubble-agent'
@@ -355,15 +356,11 @@ export default function App() {
                 <span>⚠️</span>
                 <h3>Agent Action Pending — Your Approval Required</h3>
               </div>
-              {pending.thought && (
-                <div className="hitl-thought">
-                  <span className="hitl-label">Reasoning</span>
-                  <p>{pending.thought}</p>
+              {pending.answer && (
+                <div className="hitl-answer">
+                  <p>{pending.answer}</p>
                 </div>
               )}
-              <div className="hitl-answer">
-                <p>{pending.answer}</p>
-              </div>
               <div className="hitl-command">
                 <span className="cmd-prompt">$</span>
                 <code>{pending.command}</code>

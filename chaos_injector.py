@@ -177,6 +177,7 @@ SCENARIOS = {
         "yaml": OOM_YAML,
         "pod_names": ["memory-hog"],
         "kind": "pod",
+        "briefing": "Hey! It looks like an OOM (Out of Memory) incident just triggered. I'm seeing a pod called `memory-hog` that might be crashing because it's eating up too much RAM. What should we do to investigate this?"
     },
     "connection-leak": {
         "name": "The Connection Leak",
@@ -187,6 +188,7 @@ SCENARIOS = {
         "yaml": CONNECTION_LEAK_YAML,
         "pod_names": ["connection-leaker"],
         "kind": "pod",
+        "briefing": "Hi there! I just noticed a connection leak scenario starting up. We have a pod named `connection-leaker` that might be leaving sockets open and eating up all the available connections. How do you want to handle this?"
     },
     "zombie": {
         "name": "The Zombie Apocalypse",
@@ -197,6 +199,7 @@ SCENARIOS = {
         "yaml": ZOMBIE_YAML,
         "pod_names": ["zombie-factory"],
         "kind": "pod",
+        "briefing": "Uh oh, a zombie apocalypse scenario just fired off. There's a pod called `zombie-factory` that's probably spawning a bunch of defunct processes and filling up the PID table. We need to investigate this before it starves the whole node. What's our first move?"
     },
     "poisoned-update": {
         "name": "The Poisoned Update",
@@ -207,6 +210,7 @@ SCENARIOS = {
         "yaml": POISONED_UPDATE_YAML,
         "pod_names": ["poisoned-app"],
         "kind": "deployment",
+        "briefing": "Hey! We've got a 'poisoned update' situation. A deployment just went out with some bad configs — maybe a typo or missing secret — and it looks like the pods are failing to become ready. How should we start debugging this rollout?"
     },
 }
 
@@ -270,21 +274,27 @@ def inject(scenario_key: str):
     meta = SCENARIOS[scenario_key]
     state.add_event(f"🚨 Injecting scenario: {meta['name']}")
 
-    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.yaml') as f:
+    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', delete=False, suffix='.yaml') as f:
         f.write(meta["yaml"])
         temp_path = f.name
 
     try:
-        # kubectl replace --force deletes the existing resource and immediately
-        # recreates it from the manifest — atomic, no race condition.
-        # --force-conflicts suppresses field-manager warnings on older clusters.
+        # Step 1: Force delete any existing resource so we have a clean slate.
+        # We wait for deletion to complete to avoid immutability race conditions on apply.
+        for pod_name in meta["pod_names"]:
+            subprocess.run(
+                ["kubectl", "delete", meta["kind"], pod_name, "--ignore-not-found=true"],
+                capture_output=True, text=True
+            )
+
+        # Step 2: Apply the fresh manifest
         result = subprocess.run(
-            ["kubectl", "replace", "--force", "-f", temp_path],
+            ["kubectl", "apply", "-f", temp_path],
             capture_output=True, text=True
         )
         if result.returncode != 0:
             raise RuntimeError(
-                f"kubectl replace --force failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+                f"kubectl apply failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
             )
         state.active = True
         state.scenario_key = scenario_key
