@@ -30,12 +30,13 @@ class Message(BaseModel):
 
 class ChatRequest(BaseModel):
     history: List[Message]
+    terminal_history: str = ""
 
 class ExecuteRequest(BaseModel):
     command: str
 
 class ChaosInjectRequest(BaseModel):
-    scenario: str  # "oom" | "connection-leak" | "zombie" | "poisoned-update"
+    scenario: str # "oom" | "connection-leak" | "zombie" | "poisoned-update"
 
 
 # ---------------------------------------------------------------------------
@@ -94,9 +95,9 @@ async def chaos_cleanup():
 async def chat_endpoint(request: ChatRequest):
     try:
         history = [m.model_dump() for m in request.history]
-        # Inject active scenario context so Gemma knows what's broken
         scenario_context = None
         status = chaos_injector.get_status()
+        
         if status["active"] and status["scenario_key"]:
             key = status["scenario_key"]
             meta = chaos_injector.SCENARIOS[key]
@@ -111,7 +112,13 @@ async def chat_endpoint(request: ChatRequest):
                 f"Elapsed: {status['elapsed_seconds']}s\n"
                 f"Pod statuses:\n{pod_lines}"
             )
-        response = agent.generate_response(history, scenario_context=scenario_context)
+            
+        # Pass the terminal history to the engine!
+        response = agent.generate_response(
+            chat_history=history, 
+            terminal_history=request.terminal_history,
+            scenario_context=scenario_context
+        )
         return response
     except Exception as e:
         import traceback
