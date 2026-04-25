@@ -28,6 +28,9 @@ export default function App() {
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [clusterStatus, setClusterStatus] = useState<ClusterStatus>({ active: false, scenario_key: null, scenario_name: null, elapsed_seconds: 0, events: [], pods: [] })
 
+  // Smooth Clock State
+  const [localElapsed, setLocalElapsed] = useState(0)
+
   // Chat State
   const [messages, setMessages] = useState<Message[]>([])
   const [chatInput, setChatInput] = useState('')
@@ -38,6 +41,11 @@ export default function App() {
   const [terminalInput, setTerminalInput] = useState('')
   const [loadingTerminal, setLoadingTerminal] = useState(false)
   const [commandsRunCount, setCommandsRunCount] = useState(0)
+  
+  // Terminal Arrow History State
+  const [cmdStack, setCmdStack] = useState<string[]>([])
+  const [historyIndex, setHistoryIndex] = useState<number>(-1)
+  const [draftInput, setDraftInput] = useState<string>('') // Saves what you were typing before hitting 'Up'
 
   const [postMortem, setPostMortem] = useState<PostMortem | null>(null)
 
@@ -46,13 +54,30 @@ export default function App() {
 
   // Polling & Setup
   useEffect(() => { fetch(`${API}/api/scenarios`).then(r => r.json()).then(setScenarios).catch(() => { }) }, [])
+  
   useEffect(() => {
     const poll = () => {
       fetch(`${API}/api/status`).then(r => r.json()).then((s: ClusterStatus) => {
-        setClusterStatus(s); if (!s.active && clusterStatus.active) setSelectedKey(null)
+        setClusterStatus(s); 
+        if (!s.active && clusterStatus.active) setSelectedKey(null);
+        // Sync clock, but prevent it from jumping backwards due to slight network delays
+        if (s.active) setLocalElapsed(prev => Math.max(prev, s.elapsed_seconds));
       }).catch(() => { })
     }
-    poll(); const id = setInterval(poll, 3000); return () => clearInterval(id)
+    poll(); 
+    const id = setInterval(poll, 3000); 
+    return () => clearInterval(id)
+  }, [clusterStatus.active])
+
+  // Smooth ticking interval for the clock
+  useEffect(() => {
+    let id: ReturnType<typeof setInterval>;
+    if (clusterStatus.active) {
+      id = setInterval(() => setLocalElapsed(prev => prev + 1), 1000);
+    } else {
+      setLocalElapsed(0);
+    }
+    return () => clearInterval(id);
   }, [clusterStatus.active])
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, loadingChat])
@@ -68,6 +93,7 @@ export default function App() {
 
       setTerminalHistory([{ cmd: 'System initialized.', output: `Loaded scenario: ${data.scenario}`, isError: false }])
       setCommandsRunCount(0)
+      setCmdStack([]) // Clear terminal history on new game
 
       const initMessages: Message[] = []
       if (data.briefing) initMessages.push({ role: 'assistant', content: stripThinking(data.briefing.answer) })
@@ -79,16 +105,45 @@ export default function App() {
   const healCluster = async () => {
     try {
       await fetch(`${API}/api/chaos/cleanup`, { method: 'POST' })
-      setPostMortem({ elapsed: clusterStatus.elapsed_seconds, commandsRun: commandsRunCount, scenario: clusterStatus.scenario_name ?? '' })
+      setPostMortem({ elapsed: localElapsed, commandsRun: commandsRunCount, scenario: clusterStatus.scenario_name ?? '' })
     } catch (e) { alert('Cannot reach backend') }
   }
 
   // --- TERMINAL LOGIC ---
+  const handleTerminalKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (cmdStack.length > 0) {
+        const nextIdx = historyIndex === -1 ? cmdStack.length - 1 : Math.max(0, historyIndex - 1);
+        if (historyIndex === -1) setDraftInput(terminalInput);
+        setHistoryIndex(nextIdx);
+        setTerminalInput(cmdStack[nextIdx]);
+      }
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (historyIndex !== -1) {
+        const nextIdx = historyIndex + 1;
+        if (nextIdx >= cmdStack.length) {
+          setHistoryIndex(-1);
+          setTerminalInput(draftInput);
+        } else {
+          setHistoryIndex(nextIdx);
+          setTerminalInput(cmdStack[nextIdx]);
+        }
+      }
+    }
+  }
+
   const submitTerminal = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!terminalInput.trim() || loadingTerminal) return
     const cmd = terminalInput.trim()
     setTerminalInput('')
+    
+    // Save to command history stack
+    setCmdStack(prev => [...prev, cmd])
+    setHistoryIndex(-1)
+    setDraftInput('')
 
     if (cmd.toLowerCase() === 'clear') { setTerminalHistory([]); return }
 
@@ -147,7 +202,7 @@ export default function App() {
         <div className="topbar-status">
           <span className={`pulse-dot ${clusterStatus.active ? 'pulse-red' : 'pulse-green'}`} />
           <span className={clusterStatus.active ? 'status-critical' : 'status-ok'}>
-            {clusterStatus.active ? `🔴 Incident Active — ${fmt(clusterStatus.elapsed_seconds)}` : '🟢 System Healthy'}
+            {clusterStatus.active ? `🔴 Incident Active — ${fmt(localElapsed)}` : '🟢 System Healthy'}
           </span>
         </div>
       </header>
@@ -234,7 +289,7 @@ export default function App() {
               <h3>🖥️ Sandbox Terminal</h3>
             </div>
             <div className="terminal-screen">
-              {terminalHistory.length === 0 && <div className="terminal-muted">Type `kubectl get pods` to begin...</div>}
+              {terminalHistory.length === 0 && <div className="terminal-muted" style={{color: '#475569'}}>System ready...</div>}
               {terminalHistory.map((entry, idx) => (
                 <div key={idx} className="terminal-block">
                   <div className="term-cmd"><span className="prompt">$</span> {entry.cmd}</div>
@@ -245,7 +300,15 @@ export default function App() {
             </div>
             <form className="terminal-form" onSubmit={submitTerminal}>
               <span className="prompt">$</span>
-              <input type="text" value={terminalInput} onChange={e => setTerminalInput(e.target.value)} placeholder={clusterStatus.active ? "kubectl get pods..." : "Wait for scenario to start..."} disabled={loadingTerminal || !clusterStatus.active} autoFocus />
+              <input 
+                type="text" 
+                value={terminalInput} 
+                onChange={e => setTerminalInput(e.target.value)} 
+                onKeyDown={handleTerminalKeyDown}
+                placeholder={clusterStatus.active ? "kubectl get pods..." : "Wait for scenario to start..."} 
+                disabled={loadingTerminal || !clusterStatus.active} 
+                autoFocus 
+              />
             </form>
           </main>
 
