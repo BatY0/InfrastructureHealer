@@ -844,8 +844,59 @@ body {
   padding: 0.8rem 1rem;
   border-radius: 12px;
   font-size: 0.95rem;
-  line-height: 1.4;
-  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+.bubble p {
+  margin-bottom: 0.75rem;
+}
+
+.bubble p:last-child {
+  margin-bottom: 0;
+}
+
+.bubble strong {
+  font-weight: 700;
+  color: #fff;
+}
+
+.bubble ul, .bubble ol {
+  margin-left: 1.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.bubble ul {
+  list-style-type: disc;
+}
+
+.bubble ol {
+  list-style-type: decimal;
+}
+
+.bubble li {
+  margin-bottom: 0.25rem;
+}
+
+.bubble code {
+  font-family: 'Fira Code', 'Courier New', monospace;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 0.2em 0.4em;
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+
+.bubble pre {
+  background: rgba(0, 0, 0, 0.3);
+  padding: 0.75rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin-bottom: 0.75rem;
+}
+
+.bubble pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 0.85em;
 }
 
 .student .bubble {

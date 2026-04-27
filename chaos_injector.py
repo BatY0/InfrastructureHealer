@@ -148,11 +148,13 @@ spec:
   replicas: 3
   selector:
     matchLabels:
-      app: poisoned-app
+      app: infrastructure-healer
+      scenario: poisoned-update
   template:
     metadata:
       labels:
-        app: poisoned-app
+        app: infrastructure-healer
+        scenario: poisoned-update
     spec:
       containers:
       - name: poisoned-app

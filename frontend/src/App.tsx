@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-
+import ReactMarkdown from 'react-markdown'
 function stripThinking(text: string): string {
   return text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/<\|think\|>[\s\S]*?<\/\|think\|>/gi, '').replace(/<thinking>[\s\S]*?<\/thinking>/gi, '').replace(/<think>[\s\S]*/gi, '').trim()
 }
@@ -271,7 +271,9 @@ export default function App() {
               )}
               {messages.map((msg, idx) => (
                 <div key={idx} className={`chat-bubble-wrapper ${msg.role === 'user' ? 'student' : 'mentor'}`}>
-                  <div className="bubble">{msg.content}</div>
+                  <div className="bubble">
+                    <ReactMarkdown>{msg.content}</ReactMarkdown>
+                  </div>
                 </div>
               ))}
               {loadingChat && <div className="chat-bubble-wrapper mentor"><div className="bubble typing">...</div></div>}
