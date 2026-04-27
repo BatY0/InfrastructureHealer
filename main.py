@@ -31,6 +31,7 @@ class Message(BaseModel):
 class ChatRequest(BaseModel):
     history: List[Message]
     terminal_history: str = ""
+    is_victory_review: Optional[bool] = False
 
 class ExecuteRequest(BaseModel):
     command: str
@@ -124,7 +125,8 @@ async def chat_endpoint(request: ChatRequest):
             terminal_history=request.terminal_history,
             scenario_context=scenario_context,
             taught_commands=taught_commands,
-            victory_condition=victory_condition
+            victory_condition=victory_condition,
+            is_victory_review=request.is_victory_review
         )
         return response
     except Exception as e:

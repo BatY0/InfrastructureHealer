@@ -16,10 +16,11 @@ interface ScenarioMeta {
   difficulty: string, 
   learning: string,
   taught_commands: string[],
-  tutorial_text: string
+  tutorial_text: string,
+  victory_message?: string
 }
 interface PodInfo { name: string, status: string, restarts: string, ready: string }
-interface ClusterStatus { active: boolean, scenario_key: string | null, scenario_name: string | null, elapsed_seconds: number, events: string[], pods: PodInfo[] }
+interface ClusterStatus { active: boolean, scenario_key: string | null, scenario_name: string | null, elapsed_seconds: number, events: string[], pods: PodInfo[], victory?: boolean }
 interface PostMortem { elapsed: number, commandsRun: number, scenario: string, leveledUp: boolean, stars: number }
 interface TerminalEntry { cmd: string, output: string, isError: boolean }
 interface LevelStats { stars: number, bestTime: number }
@@ -59,6 +60,11 @@ export default function App() {
 
   // Smooth Clock State
   const [localElapsed, setLocalElapsed] = useState(0)
+  
+  // Traffic & Victory State
+  const [victoryTriggered, setVictoryTriggered] = useState(false)
+  const [pendingConfirmation, setPendingConfirmation] = useState(false)
+  const isHealingRef = useRef(false)
 
   // Chat State
   const [messages, setMessages] = useState<Message[]>([])
@@ -94,6 +100,11 @@ export default function App() {
         setClusterStatus(s); 
         if (!s.active && clusterStatus.active) setSelectedKey(null);
         if (s.active) setLocalElapsed(prev => Math.max(prev, s.elapsed_seconds));
+
+        // Auto Victory Trigger
+        if (s.active && s.victory && !isHealingRef.current && !victoryTriggered) {
+          setVictoryTriggered(true);
+        }
       }).catch(() => { })
     }
     poll(); 
@@ -102,11 +113,25 @@ export default function App() {
   }, [clusterStatus.active])
 
   useEffect(() => {
+    if (victoryTriggered && !pendingConfirmation && !isHealingRef.current) {
+      if (!loadingChat) {
+        setPendingConfirmation(true);
+        sendChat(undefined, true);
+      }
+    }
+  }, [victoryTriggered, loadingChat])
+
+  useEffect(() => {
     let id: ReturnType<typeof setInterval>;
     if (clusterStatus.active) {
-      id = setInterval(() => setLocalElapsed(prev => prev + 1), 1000);
+      id = setInterval(() => {
+        setLocalElapsed(prev => prev + 1);
+      }, 1000);
     } else {
       setLocalElapsed(0);
+      setVictoryTriggered(false);
+      setPendingConfirmation(false);
+      isHealingRef.current = false;
     }
     return () => clearInterval(id);
   }, [clusterStatus.active])
@@ -139,9 +164,16 @@ export default function App() {
     } catch (e) { alert('Cannot reach backend') }
   }
 
-  const calculateStars = (time: number, cmds: number) => {
-    if (time <= 120 && cmds <= 8) return 3;
-    if (time <= 300 && cmds <= 20) return 2;
+  const calculateStars = (time: number, cmds: number, difficulty: string) => {
+    if (cmds === 0) return 0; // Prevent instant 3-star exploits
+
+    let multi = 1;
+    if (difficulty === 'Intermediate') multi = 1.5;
+    if (difficulty === 'Advanced') multi = 2.5;
+    if (difficulty === 'Expert') multi = 4.0;
+
+    if (time <= 120 * multi && cmds <= Math.ceil(8 * multi)) return 3;
+    if (time <= 300 * multi && cmds <= Math.ceil(20 * multi)) return 2;
     return 1;
   }
 
@@ -160,7 +192,7 @@ export default function App() {
         leveledUp = true;
       }
 
-      const earnedStars = calculateStars(localElapsed, commandsRunCount);
+      const earnedStars = calculateStars(localElapsed, commandsRunCount, activeScenario?.difficulty || 'Beginner');
       
       // Update Stats
       setLevelStats(prev => {
@@ -245,20 +277,41 @@ export default function App() {
   }
 
   // --- CHAT LOGIC ---
-  const sendChat = async (overrideMsg?: string) => {
+  const sendChat = async (overrideMsg?: string, isVictoryReview: boolean = false) => {
     const text = overrideMsg || chatInput
-    if (!text.trim() || loadingChat) return
+    if ((!text.trim() && !isVictoryReview) || loadingChat) return
     setChatInput(''); setLoadingChat(true)
 
-    const nextMessages = [...messages, { role: 'user', content: text } as Message]
-    setMessages(nextMessages)
+    let nextMessages = messages;
+    if (!isVictoryReview) {
+       nextMessages = [...messages, { role: 'user', content: text } as Message]
+       setMessages(nextMessages)
+    } else {
+       nextMessages = [...messages, { role: 'user', content: '[SYSTEM_INTERNAL: The user has successfully triggered the victory condition. Please generate the victory review according to the system prompt instructions.]' } as Message]
+    }
+
+    if (pendingConfirmation && !isVictoryReview) {
+      const isConfirming = /\b(yes|y|ok|okay|yep|yeah|understood|got it|sure|clear|i did|i do)\b/i.test(text);
+      if (isConfirming) {
+         setPendingConfirmation(false);
+         isHealingRef.current = true;
+         setMessages(prev => [...prev, { role: 'assistant', content: 'Awesome! Let\'s wrap this up.' }]);
+         setTimeout(() => healCluster(), 1500);
+         setLoadingChat(false);
+         return;
+      }
+    }
 
     const recentTerminal = terminalHistory.slice(-5).map(t => `$ ${t.cmd}\n${t.output}`).join('\n\n')
 
     try {
       const res = await fetch(`${API}/api/chat`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ history: nextMessages, terminal_history: recentTerminal }),
+        body: JSON.stringify({ 
+           history: nextMessages, 
+           terminal_history: recentTerminal,
+           is_victory_review: isVictoryReview
+        }),
       })
       const data = await res.json()
       setMessages(p => [...p, { role: 'assistant', content: stripThinking(data.answer) }])

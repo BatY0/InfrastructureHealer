@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import os
 import time
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -128,6 +129,8 @@ metadata:
     app: infrastructure-healer
 spec:
   replicas: 3
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: infrastructure-healer
@@ -153,6 +156,37 @@ spec:
             port: 8080         # Wrong port
           initialDelaySeconds: 5
           periodSeconds: 3
+        resources:
+          requests:
+            memory: "32Mi"
+          limits:
+            memory: "64Mi"
+"""
+POISONED_UPDATE_HEALTHY_YAML = """
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: poisoned-app
+  namespace: default
+  labels:
+    scenario: poisoned-update
+    app: infrastructure-healer
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: infrastructure-healer
+      scenario: poisoned-update
+  template:
+    metadata:
+      labels:
+        app: infrastructure-healer
+        scenario: poisoned-update
+    spec:
+      containers:
+      - name: poisoned-app
+        image: nginx:alpine
+        imagePullPolicy: IfNotPresent
         resources:
           requests:
             memory: "32Mi"
@@ -252,7 +286,8 @@ SCENARIOS = {
         "pod_names": ["hello-world"],
         "kind": "pod",
         "briefing": "Welcome to your first day! Let's start easy. I just spun up a basic web server. Can you run some commands to check on it and tell me what node it is running on?",
-        "victory_condition": "The user successfully runs the commands and tells you the node name or acknowledges the pod is running."
+        "victory_condition": "The user successfully runs the commands and tells you the node name or acknowledges the pod is running.",
+        "victory_message": "Great job! You just learned how to explore the cluster. `get nodes` shows you the physical machines, and `get pods` shows you the applications running on them. Always start here!"
     },
     "silent-crash": {
         "order": 2,
@@ -267,7 +302,8 @@ SCENARIOS = {
         "pod_names": ["crashing-app"],
         "kind": "pod",
         "briefing": "Hey there. I tried to deploy a new python app, but it keeps crashing and restarting. Can you grab the logs and tell me what the error message says?",
-        "victory_condition": "The user successfully reads the logs and tells you the error is about missing database credentials. (Note: The pod cannot be fixed in this level, finding the error IS the win)."
+        "victory_condition": "The user successfully reads the logs and tells you the error is about missing database credentials. (Note: The pod cannot be fixed in this level, finding the error IS the win).",
+        "victory_message": "Excellent! You used `kubectl logs` to discover the missing database credentials. Reading logs is always step one when an application crashes."
     },
     "oom": {
         "order": 3,
@@ -282,7 +318,8 @@ SCENARIOS = {
         "pod_names": ["memory-hog"],
         "kind": "deployment",
         "briefing": "Looks like an OOM (Out of Memory) incident just triggered. The `memory-hog` deployment is eating up too much RAM. How should we fix this?",
-        "victory_condition": "The user successfully increases the memory limits and the pod status in the cluster state shows as 'Running' with 1/1 READY."
+        "victory_condition": "The user successfully increases the memory limits and the pod status in the cluster state shows as 'Running' with 1/1 READY.",
+        "victory_message": "Perfect! You identified the OOMKilled error and increased the memory limits in the deployment. The pod now has enough breathing room to process the data without crashing."
     },
     "poisoned-update": {
         "order": 4,
@@ -293,11 +330,12 @@ SCENARIOS = {
         "learning": "Rollbacks and deployment history.",
         "taught_commands": ["kubectl rollout history deployment <name>", "kubectl rollout undo deployment <name>"],
         "tutorial_text": "Someone pushed a bad config! The pods are failing their readiness probes.\n\nInstead of finding the typo, the fastest way to restore service is to roll back to the previous known-good state using `kubectl rollout undo`.",
-        "yaml": POISONED_UPDATE_YAML,
+        "yaml": POISONED_UPDATE_HEALTHY_YAML,
         "pod_names": ["poisoned-app"],
         "kind": "deployment",
         "briefing": "We've got a 'poisoned update' situation. A deployment just went out with bad configs. How should we restore the service quickly?",
-        "victory_condition": "The user successfully rolls back the deployment and the pods show as 'Running' with 1/1 READY."
+        "victory_condition": "The user successfully rolls back the deployment and the pods show as 'Running' with 1/1 READY.",
+        "victory_message": "Crisis averted! You used `kubectl rollout undo` to instantly revert the bad code deployment. The traffic is flowing again while the developers fix their code."
     },
     "zombie": {
         "order": 5,
@@ -312,7 +350,8 @@ SCENARIOS = {
         "pod_names": ["zombie-factory"],
         "kind": "pod",
         "briefing": "Uh oh, a zombie apocalypse scenario just fired off. There's a pod called `zombie-factory` that's filling up the PID table. Show me what you've got.",
-        "victory_condition": "The user deletes the pod to clear the zombie processes."
+        "victory_condition": "The user deletes the pod to clear the zombie processes.",
+        "victory_message": "Ghost busted! You successfully tracked down and terminated the pod containing the zombie processes. The cluster's CPU is safe once more."
     },
     "connection-leak": {
         "order": 6,
@@ -327,7 +366,8 @@ SCENARIOS = {
         "pod_names": ["connection-leaker"],
         "kind": "pod",
         "briefing": "I just noticed a connection leak. The `connection-leaker` pod is leaving sockets open. It's your turn to debug. How do you want to handle this?",
-        "victory_condition": "The user investigates the connections and figures out the pod is leaking sockets, then deletes the pod."
+        "victory_condition": "The user investigates the connections and figures out the pod is leaking sockets, then deletes the pod.",
+        "victory_message": "Masterful troubleshooting! You used `netstat` inside the container to prove the connection leak, and then nuked the pod to recycle the connections."
     },
 }
 
@@ -375,6 +415,7 @@ def get_scenarios():
             "learning": meta["learning"],
             "taught_commands": meta["taught_commands"],
             "tutorial_text": meta["tutorial_text"],
+            "victory_message": meta.get("victory_message")
         }
         for key, meta in SCENARIOS.items()
     ]
@@ -396,12 +437,11 @@ def inject(scenario_key: str):
         temp_path = f.name
 
     try:
-        # Clean slate
-        for pod_name in meta["pod_names"]:
-            subprocess.run(
-                ["kubectl", "delete", meta["kind"], pod_name, "--ignore-not-found=true"],
-                capture_output=True, text=True
-            )
+        # Clean slate: Nuke ANY existing infrastructure-healer apps to prevent ghost pods
+        subprocess.run(
+            ["kubectl", "delete", "deployment,pod", "-l", "app=infrastructure-healer", "--ignore-not-found=true"],
+            capture_output=True, text=True
+        )
 
         # Apply fresh manifest
         result = subprocess.run(
@@ -415,7 +455,25 @@ def inject(scenario_key: str):
         state.scenario_key = scenario_key
         state.start_time = time.time()
         state.add_event(f"✅ Level initialized. Environment ready.")
-        
+
+        # For poisoned-update: apply a second "bad" manifest on top to create rollout history
+        if scenario_key == "poisoned-update":
+            state.add_event("⏳ Simulating bad deployment rollout...")
+            time.sleep(2)  # Let revision 1 settle
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', delete=False, suffix='.yaml') as f2:
+                f2.write(POISONED_UPDATE_YAML)
+                bad_path = f2.name
+            try:
+                bad_result = subprocess.run(
+                    ["kubectl", "apply", "-f", bad_path],
+                    capture_output=True, text=True
+                )
+                if bad_result.returncode != 0:
+                    raise RuntimeError(f"Bad deployment apply failed:\n{bad_result.stderr}")
+                state.add_event("💀 Bad config deployed — pods are now failing readiness probes!")
+            finally:
+                os.unlink(bad_path)
+
         return {"status": "injected", "scenario": meta["name"], "output": result.stdout}
     finally:
         os.unlink(temp_path)
@@ -428,15 +486,15 @@ def cleanup():
     state.add_event(f"🔧 Validating and cleaning up {meta['name']}...")
 
     errors = []
-    for pod_name in meta["pod_names"]:
-        result = subprocess.run(
-            ["kubectl", "delete", meta["kind"], pod_name, "--ignore-not-found=true"],
-            capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            errors.append(result.stderr)
-        else:
-            state.add_event(f"🗑️  Cleaned up {meta['kind']}/{pod_name}")
+    # Clean up ALL workloads with the healer label
+    result = subprocess.run(
+        ["kubectl", "delete", "deployment,pod", "-l", "app=infrastructure-healer", "--ignore-not-found=true"],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        errors.append(result.stderr)
+    else:
+        state.add_event(f"🗑️  Cleaned up all scenario workloads")
 
     if errors:
         raise RuntimeError(f"Partial cleanup errors:\n" + "\n".join(errors))
@@ -445,8 +503,48 @@ def cleanup():
     state.reset()
     return {"status": "cleaned", "scenario": scenario_name}
 
+def check_victory(scenario_key: str, state: ScenarioState, pods: list) -> bool:
+    if not state.active:
+        return False
+        
+    if scenario_key == "hello-cluster":
+        has_pods = any(re.match(r"^\$\s+kubectl\s+get\s+(pods?|po)\b", e) for e in state.events)
+        has_nodes = any(re.match(r"^\$\s+kubectl\s+get\s+(nodes?|no)\b", e) for e in state.events)
+        return has_pods and has_nodes
+
+    if scenario_key == "silent-crash":
+        has_logs = any(re.search(r"kubectl\s+logs\s+.*crashing-app", e) for e in state.events)
+        has_desc = any(re.search(r"kubectl\s+describe\s+(pod|po|pods)\s+.*crashing-app", e) for e in state.events)
+        return has_logs and has_desc
+
+    if scenario_key == "oom":
+        has_set = any("set resources" in e for e in state.events)
+        for p in pods:
+            if p["name"].startswith("memory-hog") and p["status"] == "Running" and p["ready"] == "true" and has_set:
+                return True
+        return False
+
+    if scenario_key == "poisoned-update":
+        has_undo = any("rollout undo" in e for e in state.events)
+        running_ready = sum(1 for p in pods if p["name"].startswith("poisoned-app") and p["status"] == "Running" and p["ready"] == "true")
+        return has_undo and running_ready >= 3
+
+    if scenario_key == "zombie" or scenario_key == "connection-leak":
+        meta = SCENARIOS[scenario_key]
+        for name in meta["pod_names"]:
+            if any(p["name"].startswith(name) for p in pods):
+                return False
+        if state.elapsed_seconds() > 3:
+            return True
+
+    return False
+
 def get_status():
     pods = _get_pod_statuses()
+    is_victorious = False
+    if state.active and state.scenario_key:
+        is_victorious = check_victory(state.scenario_key, state, pods)
+        
     return {
         "active": state.active,
         "scenario_key": state.scenario_key,
@@ -454,6 +552,7 @@ def get_status():
         "elapsed_seconds": state.elapsed_seconds(),
         "events": state.events[-30:],
         "pods": pods,
+        "victory": is_victorious,
     }
 
 def _get_pod_statuses():
