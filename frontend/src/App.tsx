@@ -1,16 +1,28 @@
 import { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
+
 function stripThinking(text: string): string {
   return text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/<\|think\|>[\s\S]*?<\/\|think\|>/gi, '').replace(/<thinking>[\s\S]*?<\/thinking>/gi, '').replace(/<think>[\s\S]*/gi, '').trim()
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Message { role: 'user' | 'assistant' | 'system', content: string }
-interface ScenarioMeta { key: string, name: string, description: string, icon: string, difficulty: string, learning: string }
+interface ScenarioMeta { 
+  key: string, 
+  order: number,
+  name: string, 
+  description: string, 
+  icon: string, 
+  difficulty: string, 
+  learning: string,
+  taught_commands: string[],
+  tutorial_text: string
+}
 interface PodInfo { name: string, status: string, restarts: string, ready: string }
 interface ClusterStatus { active: boolean, scenario_key: string | null, scenario_name: string | null, elapsed_seconds: number, events: string[], pods: PodInfo[] }
-interface PostMortem { elapsed: number, commandsRun: number, scenario: string }
+interface PostMortem { elapsed: number, commandsRun: number, scenario: string, leveledUp: boolean, stars: number }
 interface TerminalEntry { cmd: string, output: string, isError: boolean }
+interface LevelStats { stars: number, bestTime: number }
 
 const API = 'http://127.0.0.1:8000'
 
@@ -20,13 +32,30 @@ function fmt(secs: number) {
   return `${m}:${s}`
 }
 
-function diffBadge(d: string) { return d === 'Beginner' ? 'badge-green' : d === 'Intermediate' ? 'badge-yellow' : 'badge-red' }
+function diffBadge(d: string) { return d === 'Beginner' ? 'badge-green' : d === 'Intermediate' ? 'badge-yellow' : d === 'Expert' ? 'badge-purple' : 'badge-red' }
 function podStatusColor(status: string) { return status === 'Running' ? '#10b981' : status === 'Pending' ? '#f59e0b' : '#ef4444' }
+
+// Renders stars based on a 1-3 number
+function StarDisplay({ count }: { count: number }) {
+  if (count === 0) return null;
+  return <span style={{ letterSpacing: '2px', textShadow: '0 0 5px rgba(250, 204, 21, 0.5)' }}>{'⭐'.repeat(count)}</span>;
+}
 
 export default function App() {
   const [scenarios, setScenarios] = useState<ScenarioMeta[]>([])
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [clusterStatus, setClusterStatus] = useState<ClusterStatus>({ active: false, scenario_key: null, scenario_name: null, elapsed_seconds: 0, events: [], pods: [] })
+
+  // --- PROGRESSION & STATS STATE ---
+  const [playerLevel, setPlayerLevel] = useState<number>(() => {
+    const saved = localStorage.getItem('kubeQuest_level')
+    return saved ? parseInt(saved, 10) : 1
+  })
+  const [levelStats, setLevelStats] = useState<Record<string, LevelStats>>(() => {
+    const saved = localStorage.getItem('kubeQuest_stats')
+    return saved ? JSON.parse(saved) : {}
+  })
+  const [showBriefing, setShowBriefing] = useState(false)
 
   // Smooth Clock State
   const [localElapsed, setLocalElapsed] = useState(0)
@@ -45,12 +74,16 @@ export default function App() {
   // Terminal Arrow History State
   const [cmdStack, setCmdStack] = useState<string[]>([])
   const [historyIndex, setHistoryIndex] = useState<number>(-1)
-  const [draftInput, setDraftInput] = useState<string>('') // Saves what you were typing before hitting 'Up'
+  const [draftInput, setDraftInput] = useState<string>('')
 
   const [postMortem, setPostMortem] = useState<PostMortem | null>(null)
 
   const chatEndRef = useRef<HTMLDivElement>(null)
   const terminalEndRef = useRef<HTMLDivElement>(null)
+
+  // Derived state
+  const selectedScenario = scenarios.find(s => s.key === selectedKey)
+  const activeScenario = scenarios.find(s => s.key === clusterStatus.scenario_key)
 
   // Polling & Setup
   useEffect(() => { fetch(`${API}/api/scenarios`).then(r => r.json()).then(setScenarios).catch(() => { }) }, [])
@@ -60,7 +93,6 @@ export default function App() {
       fetch(`${API}/api/status`).then(r => r.json()).then((s: ClusterStatus) => {
         setClusterStatus(s); 
         if (!s.active && clusterStatus.active) setSelectedKey(null);
-        // Sync clock, but prevent it from jumping backwards due to slight network delays
         if (s.active) setLocalElapsed(prev => Math.max(prev, s.elapsed_seconds));
       }).catch(() => { })
     }
@@ -69,7 +101,6 @@ export default function App() {
     return () => clearInterval(id)
   }, [clusterStatus.active])
 
-  // Smooth ticking interval for the clock
   useEffect(() => {
     let id: ReturnType<typeof setInterval>;
     if (clusterStatus.active) {
@@ -84,8 +115,14 @@ export default function App() {
   useEffect(() => { terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [terminalHistory, loadingTerminal])
 
   // Actions
-  const injectChaos = async () => {
+  const handleStartClick = () => {
     if (!selectedKey) return
+    setShowBriefing(true)
+  }
+
+  const confirmAndInject = async () => {
+    if (!selectedKey) return
+    setShowBriefing(false)
     try {
       const res = await fetch(`${API}/api/chaos/inject`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scenario: selectedKey }) })
       const data = await res.json()
@@ -93,7 +130,7 @@ export default function App() {
 
       setTerminalHistory([{ cmd: 'System initialized.', output: `Loaded scenario: ${data.scenario}`, isError: false }])
       setCommandsRunCount(0)
-      setCmdStack([]) // Clear terminal history on new game
+      setCmdStack([])
 
       const initMessages: Message[] = []
       if (data.briefing) initMessages.push({ role: 'assistant', content: stripThinking(data.briefing.answer) })
@@ -102,10 +139,50 @@ export default function App() {
     } catch (e) { alert('Cannot reach backend') }
   }
 
+  const calculateStars = (time: number, cmds: number) => {
+    if (time <= 120 && cmds <= 8) return 3;
+    if (time <= 300 && cmds <= 20) return 2;
+    return 1;
+  }
+
   const healCluster = async () => {
+    if (!clusterStatus.scenario_key) return;
+    const currentKey = clusterStatus.scenario_key;
+
     try {
       await fetch(`${API}/api/chaos/cleanup`, { method: 'POST' })
-      setPostMortem({ elapsed: localElapsed, commandsRun: commandsRunCount, scenario: clusterStatus.scenario_name ?? '' })
+      
+      let leveledUp = false;
+      if (activeScenario && activeScenario.order >= playerLevel) {
+        const nextLevel = activeScenario.order + 1;
+        setPlayerLevel(nextLevel);
+        localStorage.setItem('kubeQuest_level', nextLevel.toString());
+        leveledUp = true;
+      }
+
+      const earnedStars = calculateStars(localElapsed, commandsRunCount);
+      
+      // Update Stats
+      setLevelStats(prev => {
+        const currentStats = prev[currentKey] || { stars: 0, bestTime: Infinity };
+        const newStats = {
+          ...prev,
+          [currentKey]: {
+            stars: Math.max(currentStats.stars, earnedStars),
+            bestTime: Math.min(currentStats.bestTime, localElapsed)
+          }
+        };
+        localStorage.setItem('kubeQuest_stats', JSON.stringify(newStats));
+        return newStats;
+      });
+
+      setPostMortem({ 
+        elapsed: localElapsed, 
+        commandsRun: commandsRunCount, 
+        scenario: clusterStatus.scenario_name ?? '',
+        leveledUp,
+        stars: earnedStars
+      })
     } catch (e) { alert('Cannot reach backend') }
   }
 
@@ -140,7 +217,6 @@ export default function App() {
     const cmd = terminalInput.trim()
     setTerminalInput('')
     
-    // Save to command history stack
     setCmdStack(prev => [...prev, cmd])
     setHistoryIndex(-1)
     setDraftInput('')
@@ -177,7 +253,6 @@ export default function App() {
     const nextMessages = [...messages, { role: 'user', content: text } as Message]
     setMessages(nextMessages)
 
-    // Compile recent terminal context for the AI
     const recentTerminal = terminalHistory.slice(-5).map(t => `$ ${t.cmd}\n${t.output}`).join('\n\n')
 
     try {
@@ -214,21 +289,31 @@ export default function App() {
           <section className="panel-section">
             <h2 className="section-title">Select Level</h2>
             <div className="scenario-list">
-              {scenarios.map(s => (
-                <button
-                  key={s.key} disabled={clusterStatus.active} onClick={() => setSelectedKey(s.key)}
-                  className={`scenario-card ${selectedKey === s.key ? 'scenario-card--selected' : ''} ${clusterStatus.active ? 'scenario-card--disabled' : ''}`}
-                >
-                  <span className="scenario-icon">{s.icon}</span>
-                  <div className="scenario-info">
-                    <span className="scenario-name">{s.name}</span>
-                    <span className={`badge ${diffBadge(s.difficulty)}`}>{s.difficulty}</span>
-                  </div>
-                </button>
-              ))}
+              {scenarios.map(s => {
+                const isLocked = s.order > playerLevel;
+                const stats = levelStats[s.key];
+                return (
+                  <button
+                    key={s.key} 
+                    disabled={clusterStatus.active || isLocked} 
+                    onClick={() => setSelectedKey(s.key)}
+                    className={`scenario-card ${selectedKey === s.key ? 'scenario-card--selected' : ''} ${clusterStatus.active || isLocked ? 'scenario-card--disabled' : ''}`}
+                    style={isLocked ? { opacity: 0.6, cursor: 'not-allowed', filter: 'grayscale(100%)' } : {}}
+                  >
+                    <span className="scenario-icon">{isLocked ? '🔒' : s.icon}</span>
+                    <div className="scenario-info" style={{ width: '100%' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span className="scenario-name">{s.name}</span>
+                        {stats && <StarDisplay count={stats.stars} />}
+                      </div>
+                      <span className={`badge ${diffBadge(s.difficulty)}`}>{s.difficulty}</span>
+                    </div>
+                  </button>
+                )
+              })}
             </div>
             <div className="chaos-actions" style={{ marginTop: '1rem' }}>
-              <button className="btn btn-danger" disabled={!selectedKey || clusterStatus.active} onClick={injectChaos}>▶ Start Simulator</button>
+              <button className="btn btn-danger" disabled={!selectedKey || clusterStatus.active} onClick={handleStartClick}>▶ Start Simulator</button>
               <button className="btn btn-heal" disabled={!clusterStatus.active} onClick={healCluster}>🏁 Finish Level</button>
             </div>
           </section>
@@ -287,8 +372,14 @@ export default function App() {
 
           {/* BOTTOM: THE REAL TERMINAL */}
           <main className="panel real-terminal-panel">
-            <div className="panel-header dark">
+            <div className="panel-header dark" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <h3>🖥️ Sandbox Terminal</h3>
+              {clusterStatus.active && activeScenario && (
+                <div style={{ fontSize: '0.85rem', color: '#9ca3af', background: '#1e293b', padding: '4px 10px', borderRadius: '6px', border: '1px solid #334155' }}>
+                  <strong>Target Commands: </strong> 
+                  {activeScenario.taught_commands.map((c, i) => <code key={i} style={{ marginLeft: '8px', color: '#38bdf8' }}>{c}</code>)}
+                </div>
+              )}
             </div>
             <div className="terminal-screen">
               {terminalHistory.length === 0 && <div className="terminal-muted" style={{color: '#475569'}}>System ready...</div>}
@@ -317,17 +408,54 @@ export default function App() {
         </div>
       </div>
 
+      {/* BRIEFING MODAL */}
+      {showBriefing && selectedScenario && (
+        <div className="modal-overlay" onClick={() => setShowBriefing(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '600px', textAlign: 'left' }}>
+            <h2 style={{ marginBottom: '1rem', borderBottom: '1px solid #374151', paddingBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span>{selectedScenario.icon}</span> Briefing: {selectedScenario.name}
+            </h2>
+            <div style={{ lineHeight: '1.6', color: '#d1d5db', marginBottom: '1.5rem' }}>
+              <ReactMarkdown>{selectedScenario.tutorial_text}</ReactMarkdown>
+            </div>
+            <div style={{ background: '#1f2937', padding: '1rem', borderRadius: '8px', marginBottom: '1.5rem', border: '1px solid #374151' }}>
+              <h4 style={{ margin: '0 0 0.5rem 0', color: '#9ca3af' }}>🛠️ Commands to Learn:</h4>
+              <ul style={{ margin: 0, paddingLeft: '1.5rem', color: '#38bdf8', fontFamily: 'monospace' }}>
+                {selectedScenario.taught_commands.map(cmd => (
+                  <li key={cmd} style={{ marginBottom: '0.25rem' }}>{cmd}</li>
+                ))}
+              </ul>
+            </div>
+            <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end' }}>
+              <button className="btn" style={{ background: 'transparent', border: '1px solid #4b5563' }} onClick={() => setShowBriefing(false)}>Cancel</button>
+              <button className="btn btn-danger" onClick={confirmAndInject}>Acknowledge & Start Level</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* POST MORTEM MODAL */}
       {postMortem && (
         <div className="modal-overlay" onClick={() => setPostMortem(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
-            <h2>🎉 Level Complete!</h2>
+            <div style={{ fontSize: '3rem', marginBottom: '0.5rem' }}>
+              <StarDisplay count={postMortem.stars} />
+            </div>
+            {postMortem.leveledUp ? (
+              <h2 style={{ color: '#10b981', fontSize: '2rem' }}>🌟 Level Up!</h2>
+            ) : (
+              <h2>🎉 Scenario Complete!</h2>
+            )}
             <p className="modal-scenario">{postMortem.scenario}</p>
             <div className="mortem-stats">
               <div className="mortem-stat"><span className="stat-label">Time Elapsed</span><span className="stat-val">{fmt(postMortem.elapsed)}</span></div>
               <div className="mortem-stat"><span className="stat-label">Commands Run</span><span className="stat-val yellow">{postMortem.commandsRun}</span></div>
             </div>
-            <p style={{ marginBottom: '1.5rem', color: '#9ca3af', textAlign: 'center' }}>Great job debugging this incident! Ask your mentor for a detailed breakdown, or start the next level.</p>
+            {postMortem.leveledUp ? (
+              <p style={{ marginBottom: '1.5rem', color: '#9ca3af', textAlign: 'center' }}>You learned new skills and unlocked the next scenario! Keep up the great work.</p>
+            ) : (
+              <p style={{ marginBottom: '1.5rem', color: '#9ca3af', textAlign: 'center' }}>Great job debugging this incident! Ask your mentor for a detailed breakdown, or replay to get 3 stars.</p>
+            )}
             <button className="btn btn-heal" onClick={() => setPostMortem(null)}>Continue Training</button>
           </div>
         </div>
