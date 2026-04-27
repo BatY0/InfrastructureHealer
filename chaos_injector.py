@@ -17,6 +17,7 @@ from typing import Optional
 # Scenario YAML manifests
 # ---------------------------------------------------------------------------
 
+#
 # NEW: LEVEL 1
 HELLO_CLUSTER_YAML = """
 apiVersion: v1
@@ -31,6 +32,7 @@ spec:
   containers:
   - name: hello-world
     image: nginx:alpine
+    imagePullPolicy: IfNotPresent
     resources:
       requests:
         memory: "16Mi"
@@ -51,7 +53,8 @@ metadata:
 spec:
   containers:
   - name: crashing-app
-    image: python:3.9-slim
+    image: python:alpine
+    imagePullPolicy: IfNotPresent
     command: ["python", "-c"]
     args:
     - |
@@ -91,18 +94,20 @@ spec:
     spec:
       containers:
       - name: memory-hog
-        image: python:3.9-slim
+        image: python:alpine
+        imagePullPolicy: IfNotPresent
         command: ["python", "-c"]
         args:
         - |
           import time
           data = []
           print("Starting memory allocation...")
-          for i in range(15):
+          # Simulate an app that needs ~500MB of RAM to start up
+          for i in range(50):
               data.append(' ' * 10**7)  # ~10 MB per iteration
               print(f"Allocated {(i+1) * 10} MB")
               time.sleep(0.3)
-          print("Memory stabilized at 150MB. Application running smoothly.")
+          print("Memory stabilized at 500MB. Application running smoothly.")
           while True:
               time.sleep(60)
         resources:
@@ -136,6 +141,7 @@ spec:
       containers:
       - name: poisoned-app
         image: nginx:latest
+        imagePullPolicy: IfNotPresent
         env:
         - name: DATABASE_URL
           value: "postgres://user:password@nonexistent-db:5432/prod"
@@ -166,7 +172,8 @@ metadata:
 spec:
   containers:
   - name: zombie-factory
-    image: python:3.9-slim
+    image: python:alpine
+    imagePullPolicy: IfNotPresent
     command: ["python", "-c"]
     args:
     - |
@@ -198,7 +205,8 @@ metadata:
 spec:
   containers:
   - name: connection-leaker
-    image: python:3.9-slim
+    image: python:alpine
+    imagePullPolicy: IfNotPresent
     command: ["python", "-c"]
     args:
     - |
@@ -223,6 +231,7 @@ spec:
         memory: "256Mi"
   restartPolicy: Never
 """
+
 
 
 # ---------------------------------------------------------------------------
