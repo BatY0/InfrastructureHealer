@@ -302,7 +302,10 @@ export default function App() {
       }
     }
 
-    const recentTerminal = terminalHistory.slice(-5).map(t => `$ ${t.cmd}\n${t.output}`).join('\n\n')
+    const recentTerminal = terminalHistory.slice(-5).map(t => {
+      const out = t.output.length > 500 ? t.output.slice(0, 500) + '\n...[output truncated for brevity]' : t.output;
+      return `$ ${t.cmd}\n${out}`;
+    }).join('\n\n')
 
     try {
       const res = await fetch(`${API}/api/chat`, {
