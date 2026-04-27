@@ -1,54 +1,16 @@
 import { useState, useRef, useEffect } from 'react'
-
-// Strip any residual thinking tags that slip through the backend parser
+import ReactMarkdown from 'react-markdown'
 function stripThinking(text: string): string {
-  return text
-    .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    .replace(/<\|think\|>[\s\S]*?<\/\|think\|>/gi, '')
-    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
-    .replace(/<think>[\s\S]*/gi, '')   // unclosed
-    .trim()
+  return text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/<\|think\|>[\s\S]*?<\/\|think\|>/gi, '').replace(/<thinking>[\s\S]*?<\/thinking>/gi, '').replace(/<think>[\s\S]*/gi, '').trim()
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-interface Message {
-  role: 'user' | 'assistant' | 'system'
-  content: string
-}
-
-
-interface ScenarioMeta {
-  key: string
-  name: string
-  description: string
-  icon: string
-  difficulty: string
-  learning: string
-}
-
-interface PodInfo {
-  name: string
-  status: string
-  restarts: string
-  ready: string
-}
-
-interface ClusterStatus {
-  active: boolean
-  scenario_key: string | null
-  scenario_name: string | null
-  elapsed_seconds: number
-  events: string[]
-  pods: PodInfo[]
-}
-
-interface PostMortem {
-  elapsed: number
-  approved: number
-  rejected: number
-  scenario: string
-}
+interface Message { role: 'user' | 'assistant' | 'system', content: string }
+interface ScenarioMeta { key: string, name: string, description: string, icon: string, difficulty: string, learning: string }
+interface PodInfo { name: string, status: string, restarts: string, ready: string }
+interface ClusterStatus { active: boolean, scenario_key: string | null, scenario_name: string | null, elapsed_seconds: number, events: string[], pods: PodInfo[] }
+interface PostMortem { elapsed: number, commandsRun: number, scenario: string }
+interface TerminalEntry { cmd: string, output: string, isError: boolean }
 
 const API = 'http://127.0.0.1:8000'
 
@@ -58,188 +20,203 @@ function fmt(secs: number) {
   return `${m}:${s}`
 }
 
-function diffBadge(d: string) {
-  if (d === 'Beginner') return 'badge-green'
-  if (d === 'Intermediate') return 'badge-yellow'
-  return 'badge-red'
-}
-
-function podStatusColor(status: string) {
-  if (status === 'Running') return '#10b981'
-  if (status === 'Pending') return '#f59e0b'
-  return '#ef4444'
-}
-
-// ─── App ──────────────────────────────────────────────────────────────────────
+function diffBadge(d: string) { return d === 'Beginner' ? 'badge-green' : d === 'Intermediate' ? 'badge-yellow' : 'badge-red' }
+function podStatusColor(status: string) { return status === 'Running' ? '#10b981' : status === 'Pending' ? '#f59e0b' : '#ef4444' }
 
 export default function App() {
   const [scenarios, setScenarios] = useState<ScenarioMeta[]>([])
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
-  const [clusterStatus, setClusterStatus] = useState<ClusterStatus>({
-    active: false, scenario_key: null, scenario_name: null,
-    elapsed_seconds: 0, events: [], pods: [],
-  })
+  const [clusterStatus, setClusterStatus] = useState<ClusterStatus>({ active: false, scenario_key: null, scenario_name: null, elapsed_seconds: 0, events: [], pods: [] })
+
+  // Smooth Clock State
+  const [localElapsed, setLocalElapsed] = useState(0)
+
+  // Chat State
   const [messages, setMessages] = useState<Message[]>([])
-  const [input, setInput] = useState('')
-  const [loading, setLoading] = useState(false)
+  const [chatInput, setChatInput] = useState('')
+  const [loadingChat, setLoadingChat] = useState(false)
+
+  // Terminal State
+  const [terminalHistory, setTerminalHistory] = useState<TerminalEntry[]>([])
+  const [terminalInput, setTerminalInput] = useState('')
+  const [loadingTerminal, setLoadingTerminal] = useState(false)
+  const [commandsRunCount, setCommandsRunCount] = useState(0)
+  
+  // Terminal Arrow History State
+  const [cmdStack, setCmdStack] = useState<string[]>([])
+  const [historyIndex, setHistoryIndex] = useState<number>(-1)
+  const [draftInput, setDraftInput] = useState<string>('') // Saves what you were typing before hitting 'Up'
+
   const [postMortem, setPostMortem] = useState<PostMortem | null>(null)
-  const [approvedCount, setApprovedCount] = useState(0)
-  const [rejectedCount, setRejectedCount] = useState(0)
 
   const chatEndRef = useRef<HTMLDivElement>(null)
-  const logEndRef = useRef<HTMLDivElement>(null)
+  const terminalEndRef = useRef<HTMLDivElement>(null)
 
-  // Load scenarios once
-  useEffect(() => {
-    fetch(`${API}/api/scenarios`).then(r => r.json()).then(setScenarios).catch(() => {})
-  }, [])
-
-  // Poll cluster status every 3 s
+  // Polling & Setup
+  useEffect(() => { fetch(`${API}/api/scenarios`).then(r => r.json()).then(setScenarios).catch(() => { }) }, [])
+  
   useEffect(() => {
     const poll = () => {
       fetch(`${API}/api/status`).then(r => r.json()).then((s: ClusterStatus) => {
-        setClusterStatus(s)
-        // If it was active and now cleaned up externally, reset
-        if (!s.active && clusterStatus.active) setSelectedKey(null)
-      }).catch(() => {})
+        setClusterStatus(s); 
+        if (!s.active && clusterStatus.active) setSelectedKey(null);
+        // Sync clock, but prevent it from jumping backwards due to slight network delays
+        if (s.active) setLocalElapsed(prev => Math.max(prev, s.elapsed_seconds));
+      }).catch(() => { })
     }
-    poll()
-    const id = setInterval(poll, 3000)
+    poll(); 
+    const id = setInterval(poll, 3000); 
     return () => clearInterval(id)
   }, [clusterStatus.active])
 
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, loading])
-  useEffect(() => { logEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [clusterStatus.events])
+  // Smooth ticking interval for the clock
+  useEffect(() => {
+    let id: ReturnType<typeof setInterval>;
+    if (clusterStatus.active) {
+      id = setInterval(() => setLocalElapsed(prev => prev + 1), 1000);
+    } else {
+      setLocalElapsed(0);
+    }
+    return () => clearInterval(id);
+  }, [clusterStatus.active])
 
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, loadingChat])
+  useEffect(() => { terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [terminalHistory, loadingTerminal])
+
+  // Actions
   const injectChaos = async () => {
     if (!selectedKey) return
     try {
-      const res = await fetch(`${API}/api/chaos/inject`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scenario: selectedKey }),
-      })
-      if (!res.ok) { const d = await res.json(); alert(d.detail); return }
+      const res = await fetch(`${API}/api/chaos/inject`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scenario: selectedKey }) })
       const data = await res.json()
+      if (!res.ok) { alert(data.detail); return }
 
-      const initMessages: Message[] = [
-        { role: 'system', content: `🚨 Incident injected: ${data.scenario}. The agent is analyzing the situation...` }
-      ]
+      setTerminalHistory([{ cmd: 'System initialized.', output: `Loaded scenario: ${data.scenario}`, isError: false }])
+      setCommandsRunCount(0)
+      setCmdStack([]) // Clear terminal history on new game
 
-      // If the backend returned an auto-briefing, we always push the text to the chat history
-      if (data.briefing) {
-        initMessages.push({
-          role: 'assistant',
-          content: stripThinking(data.briefing.answer),
-        })
-      }
-
+      const initMessages: Message[] = []
+      if (data.briefing) initMessages.push({ role: 'assistant', content: stripThinking(data.briefing.answer) })
       setMessages(initMessages)
-      setApprovedCount(0); setRejectedCount(0); setPostMortem(null)
+      setPostMortem(null)
     } catch (e) { alert('Cannot reach backend') }
   }
 
   const healCluster = async () => {
     try {
-      const res = await fetch(`${API}/api/chaos/cleanup`, { method: 'POST' })
-      if (!res.ok) { const d = await res.json(); alert(d.detail); return }
-      setPostMortem({
-        elapsed: clusterStatus.elapsed_seconds,
-        approved: approvedCount,
-        rejected: rejectedCount,
-        scenario: clusterStatus.scenario_name ?? '',
-      })
+      await fetch(`${API}/api/chaos/cleanup`, { method: 'POST' })
+      setPostMortem({ elapsed: localElapsed, commandsRun: commandsRunCount, scenario: clusterStatus.scenario_name ?? '' })
     } catch (e) { alert('Cannot reach backend') }
   }
 
-  const sendMessage = async () => {
-    if (!input.trim() || loading) return
-    const cmd = input.trim()
-    setInput(''); setLoading(true)
-
-    if (cmd.toLowerCase() === 'clear') {
-      setMessages([])
-      setLoading(false)
-      return
-    }
-
-    if (cmd.startsWith('kubectl ')) {
-      // Execute command directly
-      const userMsg: Message = { role: 'user', content: `$ ${cmd}` }
-      setMessages(p => [...p, userMsg])
-      try {
-        const res = await fetch(`${API}/api/command/execute`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command: cmd }),
-        })
-        const data = await res.json()
-        const out = data.output || data.error || '(no output)'
-        setMessages(p => [...p, { role: 'system', content: out }])
-      } catch (e) {
-        setMessages(p => [...p, { role: 'system', content: `Error: Cannot reach backend` }])
-      } finally {
-        setLoading(false)
+  // --- TERMINAL LOGIC ---
+  const handleTerminalKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (cmdStack.length > 0) {
+        const nextIdx = historyIndex === -1 ? cmdStack.length - 1 : Math.max(0, historyIndex - 1);
+        if (historyIndex === -1) setDraftInput(terminalInput);
+        setHistoryIndex(nextIdx);
+        setTerminalInput(cmdStack[nextIdx]);
       }
-    } else {
-      // Send chat to AI Supervisor
-      const userMsg: Message = { role: 'user', content: `> ${cmd}` }
-      const next = [...messages, userMsg]
-      setMessages(next)
-      try {
-        // Map history: system messages (terminal output) become user messages so the AI can read them
-        const history = next.map(m => {
-          if (m.role === 'system') {
-            return { role: 'user', content: `[Terminal Output]:\n${m.content}` }
-          }
-          return m
-        })
-        const res = await fetch(`${API}/api/chat`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ history }),
-        })
-        const data = await res.json()
-        setMessages(p => [...p, { role: 'assistant', content: stripThinking(data.answer) }])
-      } catch (e) {
-        setMessages(p => [...p, { role: 'system', content: `Error: Cannot reach backend` }])
-      } finally {
-        setLoading(false)
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (historyIndex !== -1) {
+        const nextIdx = historyIndex + 1;
+        if (nextIdx >= cmdStack.length) {
+          setHistoryIndex(-1);
+          setTerminalInput(draftInput);
+        } else {
+          setHistoryIndex(nextIdx);
+          setTerminalInput(cmdStack[nextIdx]);
+        }
       }
     }
   }
 
-  const score = postMortem
-    ? Math.max(0, 100 - Math.floor(postMortem.elapsed / 6) + postMortem.rejected * 5 - postMortem.approved * 2)
-    : 0
-  const grade = score >= 85 ? 'A' : score >= 70 ? 'B' : score >= 55 ? 'C' : 'D'
+  const submitTerminal = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!terminalInput.trim() || loadingTerminal) return
+    const cmd = terminalInput.trim()
+    setTerminalInput('')
+    
+    // Save to command history stack
+    setCmdStack(prev => [...prev, cmd])
+    setHistoryIndex(-1)
+    setDraftInput('')
+
+    if (cmd.toLowerCase() === 'clear') { setTerminalHistory([]); return }
+
+    setCommandsRunCount(c => c + 1)
+    const newEntryIndex = terminalHistory.length
+    setTerminalHistory(p => [...p, { cmd, output: 'Executing...', isError: false }])
+    setLoadingTerminal(true)
+
+    try {
+      const res = await fetch(`${API}/api/command/execute`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command: cmd })
+      })
+      const data = await res.json()
+      setTerminalHistory(p => {
+        const copy = [...p];
+        copy[newEntryIndex].output = data.output || data.error || '(no output)';
+        copy[newEntryIndex].isError = !!data.error || data.returncode !== 0;
+        return copy;
+      })
+    } catch (e) {
+      setTerminalHistory(p => { const copy = [...p]; copy[newEntryIndex].output = 'Connection Error.'; copy[newEntryIndex].isError = true; return copy; })
+    } finally { setLoadingTerminal(false) }
+  }
+
+  // --- CHAT LOGIC ---
+  const sendChat = async (overrideMsg?: string) => {
+    const text = overrideMsg || chatInput
+    if (!text.trim() || loadingChat) return
+    setChatInput(''); setLoadingChat(true)
+
+    const nextMessages = [...messages, { role: 'user', content: text } as Message]
+    setMessages(nextMessages)
+
+    // Compile recent terminal context for the AI
+    const recentTerminal = terminalHistory.slice(-5).map(t => `$ ${t.cmd}\n${t.output}`).join('\n\n')
+
+    try {
+      const res = await fetch(`${API}/api/chat`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ history: nextMessages, terminal_history: recentTerminal }),
+      })
+      const data = await res.json()
+      setMessages(p => [...p, { role: 'assistant', content: stripThinking(data.answer) }])
+    } catch (e) {
+      setMessages(p => [...p, { role: 'assistant', content: `(Connection Error) I can't reach the server right now.` }])
+    } finally { setLoadingChat(false) }
+  }
 
   return (
     <div className="app-shell">
-      {/* ── HEADER ── */}
       <header className="topbar">
         <div className="topbar-brand">
           <span className="brand-icon">⚡</span>
-          <span className="brand-name">Infrastructure Healer</span>
-          <span className="brand-sub">Sandboxed Cloud Outage Simulator</span>
+          <span className="brand-name">KubeQuest: Infra Simulator</span>
         </div>
         <div className="topbar-status">
           <span className={`pulse-dot ${clusterStatus.active ? 'pulse-red' : 'pulse-green'}`} />
           <span className={clusterStatus.active ? 'status-critical' : 'status-ok'}>
-            {clusterStatus.active ? `🔴 ${clusterStatus.scenario_name} — ${fmt(clusterStatus.elapsed_seconds)}` : '🟢 Cluster Healthy'}
+            {clusterStatus.active ? `🔴 Incident Active — ${fmt(localElapsed)}` : '🟢 System Healthy'}
           </span>
         </div>
       </header>
 
-      <div className="main-grid">
-        {/* ── LEFT: SCENARIOS + METRICS ── */}
+      <div className="main-grid split-layout">
+
+        {/* ── LEFT: GAME CONTROL ── */}
         <aside className="panel left-panel">
           <section className="panel-section">
-            <h2 className="section-title">Chaos Scenarios</h2>
+            <h2 className="section-title">Select Level</h2>
             <div className="scenario-list">
               {scenarios.map(s => (
                 <button
-                  key={s.key}
-                  disabled={clusterStatus.active}
-                  onClick={() => setSelectedKey(s.key)}
+                  key={s.key} disabled={clusterStatus.active} onClick={() => setSelectedKey(s.key)}
                   className={`scenario-card ${selectedKey === s.key ? 'scenario-card--selected' : ''} ${clusterStatus.active ? 'scenario-card--disabled' : ''}`}
                 >
                   <span className="scenario-icon">{s.icon}</span>
@@ -250,34 +227,15 @@ export default function App() {
                 </button>
               ))}
             </div>
-            {selectedKey && !clusterStatus.active && (
-              <div className="selected-info">
-                {(() => {
-                  const s = scenarios.find(x => x.key === selectedKey)!
-                  return s ? <p className="learning-obj">📚 {s.learning}</p> : null
-                })()}
-              </div>
-            )}
-            <div className="chaos-actions">
-              <button
-                className="btn btn-danger"
-                disabled={!selectedKey || clusterStatus.active}
-                onClick={injectChaos}
-              >Inject Outage</button>
-              <button
-                className="btn btn-heal"
-                disabled={!clusterStatus.active}
-                onClick={healCluster}
-              >Heal Cluster</button>
+            <div className="chaos-actions" style={{ marginTop: '1rem' }}>
+              <button className="btn btn-danger" disabled={!selectedKey || clusterStatus.active} onClick={injectChaos}>▶ Start Simulator</button>
+              <button className="btn btn-heal" disabled={!clusterStatus.active} onClick={healCluster}>🏁 Finish Level</button>
             </div>
           </section>
 
-          {/* Pods table */}
-          <section className="panel-section">
-            <h2 className="section-title">Pod Status</h2>
-            {clusterStatus.pods.length === 0 ? (
-              <p className="muted">No chaos pods running.</p>
-            ) : (
+          <section className="panel-section" style={{ flexGrow: 1 }}>
+            <h2 className="section-title">Live Pods Dashboard</h2>
+            {clusterStatus.pods.length === 0 ? <p className="muted">No workloads running.</p> : (
               <table className="pod-table">
                 <thead><tr><th>Pod</th><th>Status</th><th>↩</th></tr></thead>
                 <tbody>
@@ -294,93 +252,83 @@ export default function App() {
           </section>
         </aside>
 
-        {/* ── CENTER: CHAT ── */}
-        <main className="panel chat-panel">
-          <div className="chat-header">
-            <div className="agent-dot" />
-            <span className="agent-name">Junior DevOps Agent</span>
-            <span className="model-badge">gemma4:e2b · Ollama</span>
-          </div>
+        {/* ── CENTER RIGHT: Split Interaction Zone ── */}
+        <div className="interaction-column">
 
-          <div className="chat-messages">
-            {messages.length === 0 && (
-              <div className="chat-empty">
-                <p>🖥️ System online.</p>
-                <p>Select a scenario, inject an outage, then ask me to investigate.</p>
+          {/* TOP: CHAT WITH MENTOR */}
+          <main className="panel game-chat-panel">
+            <div className="panel-header">
+              <h3>👩‍🏫 Mentor Chat</h3>
+              <div className="quick-actions">
+                <button className="btn-hint" onClick={() => sendChat("I'm stuck. Can you give me a hint on what command to run next?")}>💡 Get Hint</button>
               </div>
-            )}
-            {messages.map((msg, idx) => (
-              <div key={idx} className={`terminal-line terminal-${msg.role}`}>
-                {msg.content}
-              </div>
-            ))}
-            {loading && (
-              <div className="msg-row msg-row--left">
-                <div className="typing-indicator">
-                  <span /><span /><span />
-                </div>
-              </div>
-            )}
-            <div ref={chatEndRef} />
-          </div>
-
-          <form className="chat-input-row" onSubmit={e => { e.preventDefault(); sendMessage() }}>
-            <span className="cmd-prompt">$</span>
-            <input
-              type="text"
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              placeholder={clusterStatus.active ? "Type 'kubectl get pods' or ask your supervisor..." : "Start an incident to begin..."}
-              disabled={loading}
-              className="chat-input terminal-input"
-              autoFocus
-            />
-          </form>
-        </main>
-
-        {/* ── RIGHT: EVENT LOG ── */}
-        <aside className="panel right-panel">
-          <section className="panel-section" style={{ height: '100%' }}>
-            <h2 className="section-title">Event Log</h2>
-            <div className="event-log">
-              {clusterStatus.events.length === 0
-                ? <p className="muted">Waiting for events...</p>
-                : clusterStatus.events.map((e, i) => (
-                    <div key={i} className="event-line">{e}</div>
-                  ))}
-              <div ref={logEndRef} />
             </div>
-          </section>
-        </aside>
+            <div className="chat-bubbles">
+              {messages.length === 0 && (
+                <div className="chat-empty">
+                  <p>Welcome to the simulator! Select a level on the left to begin.</p>
+                </div>
+              )}
+              {messages.map((msg, idx) => (
+                <div key={idx} className={`chat-bubble-wrapper ${msg.role === 'user' ? 'student' : 'mentor'}`}>
+                  <div className="bubble">
+                    <ReactMarkdown>{msg.content}</ReactMarkdown>
+                  </div>
+                </div>
+              ))}
+              {loadingChat && <div className="chat-bubble-wrapper mentor"><div className="bubble typing">...</div></div>}
+              <div ref={chatEndRef} />
+            </div>
+            <form className="chat-form" onSubmit={e => { e.preventDefault(); sendChat() }}>
+              <input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)} placeholder="Ask your mentor a question..." disabled={loadingChat || !clusterStatus.active} />
+              <button type="submit" disabled={!chatInput || loadingChat}>Send</button>
+            </form>
+          </main>
+
+          {/* BOTTOM: THE REAL TERMINAL */}
+          <main className="panel real-terminal-panel">
+            <div className="panel-header dark">
+              <h3>🖥️ Sandbox Terminal</h3>
+            </div>
+            <div className="terminal-screen">
+              {terminalHistory.length === 0 && <div className="terminal-muted" style={{color: '#475569'}}>System ready...</div>}
+              {terminalHistory.map((entry, idx) => (
+                <div key={idx} className="terminal-block">
+                  <div className="term-cmd"><span className="prompt">$</span> {entry.cmd}</div>
+                  <div className={`term-out ${entry.isError ? 'term-error' : ''}`}>{entry.output}</div>
+                </div>
+              ))}
+              <div ref={terminalEndRef} />
+            </div>
+            <form className="terminal-form" onSubmit={submitTerminal}>
+              <span className="prompt">$</span>
+              <input 
+                type="text" 
+                value={terminalInput} 
+                onChange={e => setTerminalInput(e.target.value)} 
+                onKeyDown={handleTerminalKeyDown}
+                placeholder={clusterStatus.active ? "kubectl get pods..." : "Wait for scenario to start..."} 
+                disabled={loadingTerminal || !clusterStatus.active} 
+                autoFocus 
+              />
+            </form>
+          </main>
+
+        </div>
       </div>
 
-      {/* ── POST-MORTEM MODAL ── */}
+      {/* POST MORTEM MODAL */}
       {postMortem && (
         <div className="modal-overlay" onClick={() => setPostMortem(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
-            <h2 className="modal-title">📋 Post-Mortem Report</h2>
+            <h2>🎉 Level Complete!</h2>
             <p className="modal-scenario">{postMortem.scenario}</p>
-            <div className="score-ring">
-              <span className="score-grade">{grade}</span>
-              <span className="score-num">{Math.min(score, 100)}</span>
-            </div>
             <div className="mortem-stats">
-              <div className="mortem-stat">
-                <span className="stat-label">Time to Resolve</span>
-                <span className="stat-val">{fmt(postMortem.elapsed)}</span>
-              </div>
-              <div className="mortem-stat">
-                <span className="stat-label">Commands Approved</span>
-                <span className="stat-val green">{postMortem.approved}</span>
-              </div>
-              <div className="mortem-stat">
-                <span className="stat-label">Commands Rejected</span>
-                <span className="stat-val yellow">{postMortem.rejected}</span>
-              </div>
+              <div className="mortem-stat"><span className="stat-label">Time Elapsed</span><span className="stat-val">{fmt(postMortem.elapsed)}</span></div>
+              <div className="mortem-stat"><span className="stat-label">Commands Run</span><span className="stat-val yellow">{postMortem.commandsRun}</span></div>
             </div>
-            <button className="btn btn-heal" onClick={() => { setPostMortem(null); setMessages([]) }}>
-              New Incident
-            </button>
+            <p style={{ marginBottom: '1.5rem', color: '#9ca3af', textAlign: 'center' }}>Great job debugging this incident! Ask your mentor for a detailed breakdown, or start the next level.</p>
+            <button className="btn btn-heal" onClick={() => setPostMortem(null)}>Continue Training</button>
           </div>
         </div>
       )}

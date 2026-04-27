@@ -21,8 +21,8 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 OOM_YAML = """
-apiVersion: v1
-kind: Pod
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: memory-hog
   namespace: default
@@ -30,25 +30,39 @@ metadata:
     scenario: oom
     app: infrastructure-healer
 spec:
-  containers:
-  - name: memory-hog
-    image: python:3.9-slim
-    command: ["python", "-c"]
-    args:
-    - |
-      import time
-      data = []
-      print("Starting memory allocation...")
-      while True:
-          data.append(' ' * 10**7)  # ~10 MB per iteration
-          print(f"Allocated {len(data) * 10} MB")
-          time.sleep(0.3)
-    resources:
-      requests:
-        memory: "50Mi"
-      limits:
-        memory: "100Mi"
-  restartPolicy: Never
+  replicas: 1
+  selector:
+    matchLabels:
+      app: infrastructure-healer
+      scenario: oom
+  template:
+    metadata:
+      labels:
+        app: infrastructure-healer
+        scenario: oom
+    spec:
+      containers:
+      - name: memory-hog
+        image: python:3.9-slim
+        command: ["python", "-c"]
+        args:
+        - |
+          import time
+          data = []
+          print("Starting memory allocation...")
+          # Simulate an app that needs ~150MB of RAM to start up
+          for i in range(15):
+              data.append(' ' * 10**7)  # ~10 MB per iteration
+              print(f"Allocated {(i+1) * 10} MB")
+              time.sleep(0.3)
+          print("Memory stabilized at 150MB. Application running smoothly.")
+          while True:
+              time.sleep(60) # keep container alive happily
+        resources:
+          requests:
+            memory: "50Mi"
+          limits:
+            memory: "100Mi"
 """
 
 CONNECTION_LEAK_YAML = """
@@ -134,11 +148,13 @@ spec:
   replicas: 3
   selector:
     matchLabels:
-      app: poisoned-app
+      app: infrastructure-healer
+      scenario: poisoned-update
   template:
     metadata:
       labels:
-        app: poisoned-app
+        app: infrastructure-healer
+        scenario: poisoned-update
     spec:
       containers:
       - name: poisoned-app
@@ -170,14 +186,14 @@ spec:
 SCENARIOS = {
     "oom": {
         "name": "The OOM",
-        "description": "A pod exceeds its memory limits, entering CrashLoopBackOff.",
+        "description": "A deployment exceeds its memory limits, entering CrashLoopBackOff.",
         "icon": "💥",
         "difficulty": "Beginner",
         "learning": "Resource limits, requests, and horizontal scaling.",
         "yaml": OOM_YAML,
         "pod_names": ["memory-hog"],
-        "kind": "pod",
-        "briefing": "Hey junior. Looks like an OOM (Out of Memory) incident just triggered. I'm seeing a pod called `memory-hog` that might be crashing because it's eating up too much RAM. You take point on this. What's your first move?"
+        "kind": "deployment",
+        "briefing": "Hey junior. Looks like an OOM (Out of Memory) incident just triggered. We have a Deployment called `memory-hog` that is crashing because it's eating up too much RAM. You take point on this. What's your first move?"
     },
     "connection-leak": {
         "name": "The Connection Leak",
