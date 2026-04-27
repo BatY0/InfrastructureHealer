@@ -97,12 +97,14 @@ async def chat_endpoint(request: ChatRequest):
         history = [m.model_dump() for m in request.history]
         scenario_context = None
         taught_commands = None
+        victory_condition = None
         status = chaos_injector.get_status()
         
         if status["active"] and status["scenario_key"]:
             key = status["scenario_key"]
             meta = chaos_injector.SCENARIOS[key]
             taught_commands = meta.get("taught_commands", [])
+            victory_condition = meta.get("victory_condition", None)
             
             pod_lines = "\n".join(
                 f"  - {p['name']}: {p['status']} (restarts={p['restarts']})"
@@ -116,19 +118,19 @@ async def chat_endpoint(request: ChatRequest):
                 f"Pod statuses:\n{pod_lines}"
             )
             
-        # Pass the terminal history AND taught commands to the engine
+        # Pass the terminal history, taught commands, and victory condition to the engine
         response = agent.generate_response(
             chat_history=history, 
             terminal_history=request.terminal_history,
             scenario_context=scenario_context,
-            taught_commands=taught_commands
+            taught_commands=taught_commands,
+            victory_condition=victory_condition
         )
         return response
     except Exception as e:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/api/command/execute")
 async def execute_command(request: ExecuteRequest):

@@ -242,7 +242,8 @@ SCENARIOS = {
         "yaml": HELLO_CLUSTER_YAML,
         "pod_names": ["hello-world"],
         "kind": "pod",
-        "briefing": "Welcome to your first day! Let's start easy. I just spun up a basic web server. Can you run some commands to check on it and tell me what node it is running on?"
+        "briefing": "Welcome to your first day! Let's start easy. I just spun up a basic web server. Can you run some commands to check on it and tell me what node it is running on?",
+        "victory_condition": "The user successfully runs the commands and tells you the node name or acknowledges the pod is running."
     },
     "silent-crash": {
         "order": 2,
@@ -256,7 +257,8 @@ SCENARIOS = {
         "yaml": SILENT_CRASH_YAML,
         "pod_names": ["crashing-app"],
         "kind": "pod",
-        "briefing": "Hey there. I tried to deploy a new python app, but it keeps crashing and restarting. Can you grab the logs and tell me what the error message says?"
+        "briefing": "Hey there. I tried to deploy a new python app, but it keeps crashing and restarting. Can you grab the logs and tell me what the error message says?",
+        "victory_condition": "The user successfully reads the logs and tells you the error is about missing database credentials. (Note: The pod cannot be fixed in this level, finding the error IS the win)."
     },
     "oom": {
         "order": 3,
@@ -270,7 +272,8 @@ SCENARIOS = {
         "yaml": OOM_YAML,
         "pod_names": ["memory-hog"],
         "kind": "deployment",
-        "briefing": "Looks like an OOM (Out of Memory) incident just triggered. The `memory-hog` deployment is eating up too much RAM. How should we fix this?"
+        "briefing": "Looks like an OOM (Out of Memory) incident just triggered. The `memory-hog` deployment is eating up too much RAM. How should we fix this?",
+        "victory_condition": "The user successfully increases the memory limits and the pod status in the cluster state shows as 'Running' with 1/1 READY."
     },
     "poisoned-update": {
         "order": 4,
@@ -284,7 +287,8 @@ SCENARIOS = {
         "yaml": POISONED_UPDATE_YAML,
         "pod_names": ["poisoned-app"],
         "kind": "deployment",
-        "briefing": "We've got a 'poisoned update' situation. A deployment just went out with bad configs. How should we restore the service quickly?"
+        "briefing": "We've got a 'poisoned update' situation. A deployment just went out with bad configs. How should we restore the service quickly?",
+        "victory_condition": "The user successfully rolls back the deployment and the pods show as 'Running' with 1/1 READY."
     },
     "zombie": {
         "order": 5,
@@ -298,7 +302,8 @@ SCENARIOS = {
         "yaml": ZOMBIE_YAML,
         "pod_names": ["zombie-factory"],
         "kind": "pod",
-        "briefing": "Uh oh, a zombie apocalypse scenario just fired off. There's a pod called `zombie-factory` that's filling up the PID table. Show me what you've got."
+        "briefing": "Uh oh, a zombie apocalypse scenario just fired off. There's a pod called `zombie-factory` that's filling up the PID table. Show me what you've got.",
+        "victory_condition": "The user deletes the pod to clear the zombie processes."
     },
     "connection-leak": {
         "order": 6,
@@ -312,7 +317,8 @@ SCENARIOS = {
         "yaml": CONNECTION_LEAK_YAML,
         "pod_names": ["connection-leaker"],
         "kind": "pod",
-        "briefing": "I just noticed a connection leak. The `connection-leaker` pod is leaving sockets open. It's your turn to debug. How do you want to handle this?"
+        "briefing": "I just noticed a connection leak. The `connection-leaker` pod is leaving sockets open. It's your turn to debug. How do you want to handle this?",
+        "victory_condition": "The user investigates the connections and figures out the pod is leaking sockets, then deletes the pod."
     },
 }
 
