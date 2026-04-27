@@ -14,7 +14,7 @@ class GemmaDevOpsEngine:
             "RULES:\n"
             "1. Be encouraging, fun, and educational. Treat this like a puzzle game.\n"
             "2. DO NOT give them the exact command right away. Give them hints (e.g., 'What command lists our pods?').\n"
-            "3. If they are stuck, explain the CONCEPTS (like what an OOM is) rather than just fixing it.\n"
+            "3. If they are stuck, explain the CONCEPTS rather than just fixing it.\n"
             "4. You will be provided with their 'RECENT TERMINAL ACTIVITY'. Use this to praise them or correct them.\n"
             "5. Keep responses short and punchy. No massive walls of text.\n"
             "6. Always use <think>...</think> FIRST to analyze privately before talking to the player.\n"
@@ -25,8 +25,15 @@ class GemmaDevOpsEngine:
             "9. If the player says they solved it, but the 'CURRENT LEVEL STATE' shows the pods are still Crashing or Pending, gently tell them the cluster is still showing errors and they need to keep investigating."
         )
 
-    def generate_response(self, chat_history, terminal_history: str = "", scenario_context: str = None):
+    def generate_response(self, chat_history, terminal_history: str = "", scenario_context: str = None, taught_commands: list = None):
         system_prompt = self.base_system_prompt
+
+        if taught_commands:
+            system_prompt += (
+                f"\n\n--- LEARNING OBJECTIVE ---\n"
+                f"The user MUST learn and use these specific commands to beat this level: {', '.join(taught_commands)}.\n"
+                f"If they ask for help, guide them to use EXACTLY these commands. Do not suggest alternative solutions until they have mastered these."
+            )
 
         if scenario_context:
             system_prompt += f"\n\n--- CURRENT LEVEL STATE ---\n{scenario_context}"
