@@ -128,6 +128,9 @@ async def chat_endpoint(request: ChatRequest):
             victory_condition=victory_condition,
             is_victory_review=request.is_victory_review
         )
+        if response.get("verified_by_llm"):
+            print("LLM verified the goal! Setting state.llm_verified = True")
+            chaos_injector.state.llm_verified = True
         return response
     except Exception as e:
         import traceback

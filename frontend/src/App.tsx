@@ -63,7 +63,6 @@ export default function App() {
   
   // Traffic & Victory State
   const [victoryTriggered, setVictoryTriggered] = useState(false)
-  const [pendingConfirmation, setPendingConfirmation] = useState(false)
   const isHealingRef = useRef(false)
 
   // Chat State
@@ -113,9 +112,9 @@ export default function App() {
   }, [clusterStatus.active])
 
   useEffect(() => {
-    if (victoryTriggered && !pendingConfirmation && !isHealingRef.current) {
+    if (victoryTriggered && !isHealingRef.current) {
       if (!loadingChat) {
-        setPendingConfirmation(true);
+        isHealingRef.current = true;
         sendChat(undefined, true);
       }
     }
@@ -130,7 +129,6 @@ export default function App() {
     } else {
       setLocalElapsed(0);
       setVictoryTriggered(false);
-      setPendingConfirmation(false);
       isHealingRef.current = false;
     }
     return () => clearInterval(id);
@@ -290,17 +288,7 @@ export default function App() {
        nextMessages = [...messages, { role: 'user', content: '[SYSTEM_INTERNAL: The user has successfully triggered the victory condition. Please generate the victory review according to the system prompt instructions.]' } as Message]
     }
 
-    if (pendingConfirmation && !isVictoryReview) {
-      const isConfirming = /\b(yes|y|ok|okay|yep|yeah|understood|got it|sure|clear|i did|i do)\b/i.test(text);
-      if (isConfirming) {
-         setPendingConfirmation(false);
-         isHealingRef.current = true;
-         setMessages(prev => [...prev, { role: 'assistant', content: 'Awesome! Let\'s wrap this up.' }]);
-         setTimeout(() => healCluster(), 1500);
-         setLoadingChat(false);
-         return;
-      }
-    }
+
 
     const recentTerminal = terminalHistory.slice(-5).map(t => {
       const out = t.output.length > 500 ? t.output.slice(0, 500) + '\n...[output truncated for brevity]' : t.output;
@@ -318,6 +306,10 @@ export default function App() {
       })
       const data = await res.json()
       setMessages(p => [...p, { role: 'assistant', content: stripThinking(data.answer) }])
+      
+      if (isVictoryReview) {
+        setTimeout(() => healCluster(), 3000);
+      }
     } catch (e) {
       setMessages(p => [...p, { role: 'assistant', content: `(Connection Error) I can't reach the server right now.` }])
     } finally { setLoadingChat(false) }
@@ -421,7 +413,7 @@ export default function App() {
               <div ref={chatEndRef} />
             </div>
             <form className="chat-form" onSubmit={e => { e.preventDefault(); sendChat() }}>
-              <input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)} placeholder="Ask your mentor a question..." disabled={loadingChat || !clusterStatus.active} />
+              <input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)} placeholder="Ask your mentor a question..." disabled={loadingChat} />
               <button type="submit" disabled={!chatInput || loadingChat}>Send</button>
             </form>
           </main>
@@ -510,7 +502,7 @@ export default function App() {
             {postMortem.leveledUp ? (
               <p style={{ marginBottom: '1.5rem', color: '#9ca3af', textAlign: 'center' }}>You learned new skills and unlocked the next scenario! Keep up the great work.</p>
             ) : (
-              <p style={{ marginBottom: '1.5rem', color: '#9ca3af', textAlign: 'center' }}>Great job debugging this incident! Ask your mentor for a detailed breakdown, or replay to get 3 stars.</p>
+              <p style={{ marginBottom: '1.5rem', color: '#9ca3af', textAlign: 'center' }}>Great job debugging this incident! Ask your mentor for a detailed breakdown, or replay{postMortem.stars < 3 ? ' to get 3 stars' : ''}.</p>
             )}
             <button className="btn btn-heal" onClick={() => setPostMortem(null)}>Continue Training</button>
           </div>

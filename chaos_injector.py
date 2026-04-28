@@ -377,12 +377,14 @@ class ScenarioState:
     scenario_key: Optional[str] = None
     start_time: Optional[float] = None
     events: list = field(default_factory=list)
+    llm_verified: bool = False
 
     def reset(self):
         self.active = False
         self.scenario_key = None
         self.start_time = None
         self.events = []
+        self.llm_verified = False
 
     def elapsed_seconds(self) -> int:
         if self.start_time is None:
@@ -508,14 +510,14 @@ def check_victory(scenario_key: str, state: ScenarioState, pods: list) -> bool:
         return False
         
     if scenario_key == "hello-cluster":
-        has_pods = any(re.match(r"^\$\s+kubectl\s+get\s+(pods?|po)\b", e) for e in state.events)
-        has_nodes = any(re.match(r"^\$\s+kubectl\s+get\s+(nodes?|no)\b", e) for e in state.events)
-        return has_pods and has_nodes
+        has_pods = any(re.search(r"\$\s+kubectl\s+get\s+(pods?|po)\b", e) for e in state.events)
+        has_nodes = any(re.search(r"\$\s+kubectl\s+get\s+(nodes?|no)\b", e) for e in state.events)
+        return has_pods and has_nodes and state.llm_verified
 
     if scenario_key == "silent-crash":
         has_logs = any(re.search(r"kubectl\s+logs\s+.*crashing-app", e) for e in state.events)
         has_desc = any(re.search(r"kubectl\s+describe\s+(pod|po|pods)\s+.*crashing-app", e) for e in state.events)
-        return has_logs and has_desc
+        return has_logs and has_desc and state.llm_verified
 
     if scenario_key == "oom":
         has_set = any("set resources" in e for e in state.events)

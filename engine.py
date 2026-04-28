@@ -40,7 +40,7 @@ class GemmaDevOpsEngine:
                 system_prompt += f"Context: The true goal of this level was: {victory_condition} "
             
             system_prompt += (
-                f"Explain concisely what the core error in the infrastructure was, how the commands they ran helped identify or fix it, and then explicitly ask them 'Did you understand how to use these commands?'."
+                f"Explain concisely what the core error in the infrastructure was, and how the commands they ran helped identify or fix it."
             )
         elif victory_condition:
             system_prompt += (
@@ -49,7 +49,7 @@ class GemmaDevOpsEngine:
                 f"ABSOLUTE RULES:\n"
                 f"1. You are a MENTOR ONLY. The backend system, not you, controls when the level ends.\n"
                 f"2. NEVER say things like 'You did it!', 'Let's wrap this up', 'Awesome job finishing!', 'Level complete', or any phrase that implies the level is over.\n"
-                f"3. If the student appears to have met the goal, you may say their command looks correct and that the system is verifying the result. Then STOP and wait.\n"
+                f"3. If the student has successfully met the goal (including answering any questions required by the goal) AND they have successfully run the required commands in the terminal, you MUST include the exact tag <VERIFIED> anywhere in your response. DO NOT output this tag if they haven't run the commands yet. This tag tells the backend to run the official verification check.\n"
                 f"4. Continue mentoring naturally if they have questions."
             )
 
@@ -97,4 +97,9 @@ class GemmaDevOpsEngine:
         for pattern in THINK_PATTERNS:
             answer = re.sub(pattern, '', answer, flags=re.DOTALL | re.IGNORECASE)
 
-        return {"type": "message", "thought": thought, "answer": answer.strip()}
+        verified = False
+        if re.search(r'<VERIFIED>', answer, re.IGNORECASE):
+            verified = True
+            answer = re.sub(r'<VERIFIED>', '', answer, flags=re.IGNORECASE)
+
+        return {"type": "message", "thought": thought, "answer": answer.strip(), "verified_by_llm": verified}
