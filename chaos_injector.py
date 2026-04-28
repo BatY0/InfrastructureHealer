@@ -510,13 +510,13 @@ def check_victory(scenario_key: str, state: ScenarioState, pods: list) -> bool:
         return False
         
     if scenario_key == "hello-cluster":
-        has_pods = any(re.search(r"\$\s+kubectl\s+get\s+(pods?|po)\b", e) for e in state.events)
-        has_nodes = any(re.search(r"\$\s+kubectl\s+get\s+(nodes?|no)\b", e) for e in state.events)
+        has_pods = any(re.match(r"^\[\d{2}:\d{2}:\d{2}\]\s+\$\s+kubectl\s+get\s+(pods?|po)\b", e) for e in state.events)
+        has_nodes = any(re.match(r"^\[\d{2}:\d{2}:\d{2}\]\s+\$\s+kubectl\s+get\s+(nodes?|no)\b", e) for e in state.events)
         return has_pods and has_nodes and state.llm_verified
 
     if scenario_key == "silent-crash":
-        has_logs = any(re.search(r"kubectl\s+logs\s+.*crashing-app", e) for e in state.events)
-        has_desc = any(re.search(r"kubectl\s+describe\s+(pod|po|pods)\s+.*crashing-app", e) for e in state.events)
+        has_logs = any(re.match(r"^\[\d{2}:\d{2}:\d{2}\]\s+\$\s+kubectl\s+logs\s+.*crashing-app", e) for e in state.events)
+        has_desc = any(re.match(r"^\[\d{2}:\d{2}:\d{2}\]\s+\$\s+kubectl\s+describe\s+(pod|po|pods)\s+.*crashing-app", e) for e in state.events)
         return has_logs and has_desc and state.llm_verified
 
     if scenario_key == "oom":
