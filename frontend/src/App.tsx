@@ -422,12 +422,6 @@ export default function App() {
           <main className="panel real-terminal-panel">
             <div className="panel-header dark" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <h3>🖥️ Sandbox Terminal</h3>
-              {clusterStatus.active && activeScenario && (
-                <div style={{ fontSize: '0.85rem', color: '#9ca3af', background: '#1e293b', padding: '4px 10px', borderRadius: '6px', border: '1px solid #334155' }}>
-                  <strong>Target Commands: </strong> 
-                  {activeScenario.taught_commands.map((c, i) => <code key={i} style={{ marginLeft: '8px', color: '#38bdf8' }}>{c}</code>)}
-                </div>
-              )}
             </div>
             <div className="terminal-screen">
               {terminalHistory.length === 0 && <div className="terminal-muted" style={{color: '#475569'}}>System ready...</div>}
@@ -446,7 +440,7 @@ export default function App() {
                 value={terminalInput} 
                 onChange={e => setTerminalInput(e.target.value)} 
                 onKeyDown={handleTerminalKeyDown}
-                placeholder={clusterStatus.active ? "kubectl get pods..." : "Wait for scenario to start..."} 
+                placeholder={clusterStatus.active ? "Ask your mentor for your next debugging step..." : "Wait for scenario to start..."} 
                 disabled={loadingTerminal || !clusterStatus.active} 
                 autoFocus 
               />
@@ -465,14 +459,6 @@ export default function App() {
             </h2>
             <div style={{ lineHeight: '1.6', color: '#d1d5db', marginBottom: '1.5rem' }}>
               <ReactMarkdown>{selectedScenario.tutorial_text}</ReactMarkdown>
-            </div>
-            <div style={{ background: '#1f2937', padding: '1rem', borderRadius: '8px', marginBottom: '1.5rem', border: '1px solid #374151' }}>
-              <h4 style={{ margin: '0 0 0.5rem 0', color: '#9ca3af' }}>🛠️ Commands to Learn:</h4>
-              <ul style={{ margin: 0, paddingLeft: '1.5rem', color: '#38bdf8', fontFamily: 'monospace' }}>
-                {selectedScenario.taught_commands.map(cmd => (
-                  <li key={cmd} style={{ marginBottom: '0.25rem' }}>{cmd}</li>
-                ))}
-              </ul>
             </div>
             <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end' }}>
               <button className="btn" style={{ background: 'transparent', border: '1px solid #4b5563' }} onClick={() => setShowBriefing(false)}>Cancel</button>
