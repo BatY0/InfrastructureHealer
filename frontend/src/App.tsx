@@ -2,7 +2,21 @@ import { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 
 function stripThinking(text: string): string {
-  return text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/<\|think\|>[\s\S]*?<\/\|think\|>/gi, '').replace(/<thinking>[\s\S]*?<\/thinking>/gi, '').replace(/<think>[\s\S]*/gi, '').trim()
+  const withoutThinking = text
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<\|think\|>[\s\S]*?<\/\|think\|>/gi, '')
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+    .replace(/<think>[\s\S]*/gi, '')
+
+  // Normalize common LaTeX-style tokens some models output in plain chat.
+  return withoutThinking
+    .replace(/\$\\rightarrow\$/g, '→')
+    .replace(/\\rightarrow/g, '→')
+    .replace(/\$\\to\$/g, '→')
+    .replace(/\\to/g, '→')
+    .replace(/\$\\Rightarrow\$/g, '⇒')
+    .replace(/\\Rightarrow/g, '⇒')
+    .trim()
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
