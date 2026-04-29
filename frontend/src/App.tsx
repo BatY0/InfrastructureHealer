@@ -24,6 +24,16 @@ interface ClusterStatus { active: boolean, scenario_key: string | null, scenario
 interface PostMortem { elapsed: number, commandsRun: number, scenario: string, leveledUp: boolean, stars: number }
 interface TerminalEntry { cmd: string, output: string, isError: boolean }
 interface LevelStats { stars: number, bestTime: number }
+interface ModelOption { id: string, label: string, approx_hardware: string, notes?: string }
+interface AppSettings { selected_model: string, model_options: ModelOption[] }
+interface OllamaStatus {
+  running: boolean
+  api_compatible: boolean
+  installed_models: string[]
+  selected_model: string
+  selected_model_installed: boolean
+  error?: string | null
+}
 
 const API = 'http://127.0.0.1:8000'
 
@@ -40,6 +50,14 @@ function podStatusColor(status: string) { return status === 'Running' ? '#10b981
 function StarDisplay({ count }: { count: number }) {
   if (count === 0) return null;
   return <span style={{ letterSpacing: '2px', textShadow: '0 0 5px rgba(250, 204, 21, 0.5)' }}>{'⭐'.repeat(count)}</span>;
+}
+
+function isModelInstalled(modelId: string, installed: string[]) {
+  if (!modelId) return false
+  if (installed.includes(modelId)) return true
+  if (!modelId.includes(':') && installed.includes(`${modelId}:latest`)) return true
+  if (modelId.endsWith(':latest') && installed.includes(modelId.split(':')[0])) return true
+  return false
 }
 
 export default function App() {
@@ -82,6 +100,14 @@ export default function App() {
   const [draftInput, setDraftInput] = useState<string>('')
 
   const [postMortem, setPostMortem] = useState<PostMortem | null>(null)
+  const [settings, setSettings] = useState<AppSettings>({ selected_model: 'gemma4:e2b', model_options: [] })
+  const [savingModel, setSavingModel] = useState(false)
+  const [showModelSettings, setShowModelSettings] = useState(false)
+  const [modelDraft, setModelDraft] = useState('gemma4:e2b')
+  const [useCustomModel, setUseCustomModel] = useState(false)
+  const [customModelDraft, setCustomModelDraft] = useState('')
+  const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null)
+  const [checkingOllama, setCheckingOllama] = useState(false)
 
   const chatEndRef = useRef<HTMLDivElement>(null)
   const terminalEndRef = useRef<HTMLDivElement>(null)
@@ -89,9 +115,23 @@ export default function App() {
   // Derived state
   const selectedScenario = scenarios.find(s => s.key === selectedKey)
   const activeScenario = scenarios.find(s => s.key === clusterStatus.scenario_key)
+  const selectedModelMeta = settings.model_options.find(m => m.id === settings.selected_model)
+  const draftModelMeta = settings.model_options.find(m => m.id === modelDraft)
+  const selectedModelLabel = selectedModelMeta?.label || settings.selected_model
+  const modalTargetModel = (useCustomModel ? customModelDraft : modelDraft).trim()
+  const modalTargetInstalled = isModelInstalled(modalTargetModel, ollamaStatus?.installed_models || [])
 
   // Polling & Setup
   useEffect(() => { fetch(`${API}/api/scenarios`).then(r => r.json()).then(setScenarios).catch(() => { }) }, [])
+  useEffect(() => {
+    fetch(`${API}/api/settings`)
+      .then(r => r.json())
+      .then((data: AppSettings) => {
+        setSettings(data)
+        setModelDraft(data.selected_model)
+      })
+      .catch(() => { })
+  }, [])
   
   useEffect(() => {
     const poll = () => {
@@ -305,6 +345,11 @@ export default function App() {
         }),
       })
       const data = await res.json()
+      if (!res.ok) {
+        const detail = data?.detail || 'Mentor request failed.'
+        setMessages(p => [...p, { role: 'assistant', content: `⚠️ ${detail}` }])
+        return
+      }
       setMessages(p => [...p, { role: 'assistant', content: stripThinking(data.answer) }])
       
       if (isVictoryReview) {
@@ -315,12 +360,74 @@ export default function App() {
     } finally { setLoadingChat(false) }
   }
 
+  const updateModel = async (modelId: string) => {
+    const nextModel = modelId.trim()
+    if (!nextModel || savingModel) return false
+    setSavingModel(true)
+    try {
+      const res = await fetch(`${API}/api/settings/model`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: nextModel })
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        alert(data.detail || 'Failed to update model')
+        return false
+      }
+      setSettings(prev => ({ ...prev, selected_model: data.selected_model }))
+      setModelDraft(data.selected_model)
+      return true
+    } catch {
+      alert('Cannot update model right now.')
+      return false
+    } finally {
+      setSavingModel(false)
+    }
+  }
+
+  const refreshOllamaStatus = async () => {
+    setCheckingOllama(true)
+    try {
+      const res = await fetch(`${API}/api/settings/ollama`)
+      const data = await res.json()
+      if (!res.ok) {
+        setOllamaStatus(null)
+        return
+      }
+      setOllamaStatus(data)
+    } catch {
+      setOllamaStatus(null)
+    } finally {
+      setCheckingOllama(false)
+    }
+  }
+
+  const openModelSettings = () => {
+    setModelDraft(settings.selected_model)
+    setUseCustomModel(false)
+    setCustomModelDraft('')
+    setShowModelSettings(true)
+    refreshOllamaStatus()
+  }
+
+  const applyModelFromModal = async () => {
+    const targetModel = useCustomModel ? customModelDraft : modelDraft
+    const ok = await updateModel(targetModel)
+    await refreshOllamaStatus()
+    if (ok) setShowModelSettings(false)
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
         <div className="topbar-brand">
           <span className="brand-icon">⚡</span>
           <span className="brand-name">KubeQuest: Infra Simulator</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <span style={{ color: '#9ca3af', fontSize: '0.8rem' }}>Model: {selectedModelLabel}</span>
+          <button className="btn" style={{ padding: '6px 10px' }} onClick={openModelSettings}>Model Settings</button>
         </div>
         <div className="topbar-status">
           <span className={`pulse-dot ${clusterStatus.active ? 'pulse-red' : 'pulse-green'}`} />
@@ -463,6 +570,103 @@ export default function App() {
             <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end' }}>
               <button className="btn" style={{ background: 'transparent', border: '1px solid #4b5563' }} onClick={() => setShowBriefing(false)}>Cancel</button>
               <button className="btn btn-danger" onClick={confirmAndInject}>Acknowledge & Start Level</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODEL SETTINGS MODAL */}
+      {showModelSettings && (
+        <div className="modal-overlay" onClick={() => setShowModelSettings(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '640px', textAlign: 'left' }}>
+            <h2 style={{ marginBottom: '1rem', borderBottom: '1px solid #374151', paddingBottom: '0.5rem' }}>
+              Model Settings
+            </h2>
+            <p style={{ color: '#9ca3af', marginBottom: '1rem' }}>
+              Choose from known Ollama model IDs first. You can optionally use a custom model id if needed.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'center', marginBottom: '0.75rem' }}>
+              <div style={{ fontSize: '0.85rem', color: '#9ca3af' }}>
+                Ollama status: {checkingOllama ? 'Checking...' : (ollamaStatus?.running ? 'Running' : 'Not reachable')}
+                {ollamaStatus?.running && !ollamaStatus.api_compatible && ' (API incompatible)'}
+              </div>
+              <button className="btn" style={{ padding: '6px 10px' }} onClick={refreshOllamaStatus} disabled={checkingOllama}>
+                Refresh Check
+              </button>
+            </div>
+            {ollamaStatus?.error && (
+              <div style={{ marginBottom: '0.75rem', color: '#fecaca', background: '#3f1d1d', border: '1px solid #7f1d1d', borderRadius: '8px', padding: '10px' }}>
+                {ollamaStatus.error}
+              </div>
+            )}
+
+            <label style={{ display: 'block', color: '#cbd5e1', marginBottom: '0.4rem' }}>Available Ollama Models</label>
+            <select
+              value={modelDraft}
+              onChange={e => setModelDraft(e.target.value)}
+              disabled={savingModel}
+              style={{ width: '100%', marginBottom: '0.75rem', background: '#0f172a', color: '#e5e7eb', border: '1px solid #334155', borderRadius: '6px', padding: '10px' }}
+            >
+              {settings.model_options.map(opt => (
+                <option key={opt.id} value={opt.id}>{opt.label} ({opt.id})</option>
+              ))}
+            </select>
+
+            <div style={{ marginBottom: '1rem', fontSize: '0.9rem', color: '#cbd5e1', background: '#1f2937', border: '1px solid #374151', borderRadius: '8px', padding: '10px' }}>
+              <div><strong>Current:</strong> {settings.selected_model}</div>
+              <div><strong>Selected:</strong> {useCustomModel ? customModelDraft || '(custom model id)' : modelDraft}</div>
+              <div><strong>Approx Hardware:</strong> {useCustomModel ? 'Custom model: check ollama run requirements for your chosen model.' : (draftModelMeta?.approx_hardware || 'Unknown')}</div>
+              <div><strong>Installed:</strong> {modalTargetModel ? (modalTargetInstalled ? 'Yes' : 'No') : 'Unknown'}</div>
+              {!useCustomModel && draftModelMeta?.notes && (
+                <div><strong>Notes:</strong> {draftModelMeta.notes}</div>
+              )}
+            </div>
+            {!modalTargetInstalled && modalTargetModel && (
+              <div style={{ marginBottom: '1rem', color: '#fef3c7', background: '#3f2d0f', border: '1px solid #78350f', borderRadius: '8px', padding: '10px' }}>
+                Model is not installed locally. Run: <code>ollama pull {modalTargetModel}</code>
+              </div>
+            )}
+            {ollamaStatus?.installed_models?.length ? (
+              <div style={{ marginBottom: '1rem', color: '#9ca3af', fontSize: '0.85rem' }}>
+                Installed models: {ollamaStatus.installed_models.join(', ')}
+              </div>
+            ) : (
+              <div style={{ marginBottom: '1rem', color: '#9ca3af', fontSize: '0.85rem' }}>
+                No installed model list detected yet.
+              </div>
+            )}
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#cbd5e1', marginBottom: '0.6rem' }}>
+              <input
+                type="checkbox"
+                checked={useCustomModel}
+                onChange={e => setUseCustomModel(e.target.checked)}
+                disabled={savingModel}
+              />
+              Use custom model id instead
+            </label>
+
+            {useCustomModel && (
+              <input
+                value={customModelDraft}
+                onChange={e => setCustomModelDraft(e.target.value)}
+                placeholder="Example: gemma4:custom-tag"
+                disabled={savingModel}
+                style={{ width: '100%', marginBottom: '1rem', background: '#0f172a', color: '#e5e7eb', border: '1px solid #334155', borderRadius: '6px', padding: '10px' }}
+              />
+            )}
+
+            <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end' }}>
+              <button className="btn" style={{ background: 'transparent', border: '1px solid #4b5563' }} onClick={() => setShowModelSettings(false)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-heal"
+                onClick={applyModelFromModal}
+                disabled={savingModel || (useCustomModel && !customModelDraft.trim())}
+              >
+                {savingModel ? 'Applying...' : 'Apply Model'}
+              </button>
             </div>
           </div>
         </div>

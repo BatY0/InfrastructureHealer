@@ -39,6 +39,9 @@ class ExecuteRequest(BaseModel):
 class ChaosInjectRequest(BaseModel):
     scenario: str # "oom" | "connection-leak" | "zombie" | "poisoned-update"
 
+class UpdateModelRequest(BaseModel):
+    model: str
+
 
 # ---------------------------------------------------------------------------
 # Routes
@@ -90,6 +93,27 @@ async def chaos_cleanup():
         return result
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/settings")
+def get_settings():
+    return agent.get_settings()
+
+@app.get("/api/settings/ollama")
+def get_ollama_status():
+    return agent.get_ollama_status()
+
+@app.post("/api/settings/model")
+def update_model(request: UpdateModelRequest):
+    try:
+        agent.set_model(request.model)
+        runtime = agent.get_ollama_status()
+        return {
+            "status": "updated",
+            "selected_model": request.model.strip(),
+            "selected_model_installed": runtime.get("selected_model_installed", False)
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/api/chat")

@@ -1,0 +1,23 @@
+{
+  "selected_model": "gemma4:e4b",
+  "model_options": [
+    {
+      "id": "gemma4:e2b",
+      "label": "Fast (Gemma 4 E2B)",
+      "approx_hardware": "Approx: 8-12 GB RAM for smooth local use; CPU-only works but slower.",
+      "notes": "Best for low-resource laptops and live demos."
+    },
+    {
+      "id": "gemma4:e4b",
+      "label": "Balanced (Gemma 4 E4B)",
+      "approx_hardware": "Approx: 16+ GB RAM, or 8+ GB VRAM for responsive chat.",
+      "notes": "Stronger multi-step coaching while keeping acceptable latency."
+    },
+    {
+      "id": "gemma4:4b",
+      "label": "Quality (Gemma 4 4B-class)",
+      "approx_hardware": "Approx: 24+ GB RAM, or 12+ GB VRAM recommended.",
+      "notes": "Better reasoning consistency; use if your machine can handle it."
+    }
+  ]
+}

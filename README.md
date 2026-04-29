@@ -56,6 +56,13 @@ Target outcomes:
 - **Model Runtime:** Ollama local API (`http://localhost:11434/api/chat`)
 - **Sandbox Infra:** Kubernetes (local k3d cluster recommended)
 
+## Model Settings
+
+- Users can switch mentor models directly from the frontend.
+- The backend persists model choice in `model_settings.json`.
+- Each preset includes approximate hardware guidance to help users choose a model that matches their machine.
+- Advanced users can enter any custom Ollama model id from the UI.
+
 ## Quick Start
 
 ### 1) Prerequisites
@@ -121,7 +128,6 @@ Ensure Ollama is running before opening mentor chat.
 
 - Scenario verification rules are heuristic and can be expanded.
 - Model quality depends on local hardware and Ollama runtime responsiveness.
-- No auth/multi-user tenancy in current prototype.
 
 ### Model Capability Tradeoffs
 
