@@ -512,7 +512,8 @@ def check_victory(scenario_key: str, state: ScenarioState, pods: list) -> bool:
     if scenario_key == "hello-cluster":
         has_pods = any(re.match(r"^\[\d{2}:\d{2}:\d{2}\]\s+\$\s+kubectl\s+get\s+(pods?|po)\b", e) for e in state.events)
         has_nodes = any(re.match(r"^\[\d{2}:\d{2}:\d{2}\]\s+\$\s+kubectl\s+get\s+(nodes?|no)\b", e) for e in state.events)
-        return has_pods and has_nodes and state.llm_verified
+        # Level 1 should finish from terminal evidence alone; mentor verification is optional.
+        return has_pods and has_nodes
 
     if scenario_key == "silent-crash":
         has_logs = any(re.match(r"^\[\d{2}:\d{2}:\d{2}\]\s+\$\s+kubectl\s+logs\s+.*crashing-app", e) for e in state.events)
