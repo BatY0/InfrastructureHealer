@@ -1,16 +1,53 @@
 import { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
+
 function stripThinking(text: string): string {
-  return text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/<\|think\|>[\s\S]*?<\/\|think\|>/gi, '').replace(/<thinking>[\s\S]*?<\/thinking>/gi, '').replace(/<think>[\s\S]*/gi, '').trim()
+  const withoutThinking = text
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<\|think\|>[\s\S]*?<\/\|think\|>/gi, '')
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+    .replace(/<think>[\s\S]*/gi, '')
+
+  // Normalize common LaTeX-style tokens some models output in plain chat.
+  return withoutThinking
+    .replace(/\$\\rightarrow\$/g, '→')
+    .replace(/\\rightarrow/g, '→')
+    .replace(/\$\\to\$/g, '→')
+    .replace(/\\to/g, '→')
+    .replace(/\$\\Rightarrow\$/g, '⇒')
+    .replace(/\\Rightarrow/g, '⇒')
+    .trim()
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Message { role: 'user' | 'assistant' | 'system', content: string }
-interface ScenarioMeta { key: string, name: string, description: string, icon: string, difficulty: string, learning: string }
+interface ScenarioMeta { 
+  key: string, 
+  order: number,
+  name: string, 
+  description: string, 
+  icon: string, 
+  difficulty: string, 
+  learning: string,
+  taught_commands: string[],
+  tutorial_text: string,
+  victory_message?: string
+}
 interface PodInfo { name: string, status: string, restarts: string, ready: string }
-interface ClusterStatus { active: boolean, scenario_key: string | null, scenario_name: string | null, elapsed_seconds: number, events: string[], pods: PodInfo[] }
-interface PostMortem { elapsed: number, commandsRun: number, scenario: string }
+interface ClusterStatus { active: boolean, scenario_key: string | null, scenario_name: string | null, elapsed_seconds: number, events: string[], pods: PodInfo[], victory?: boolean }
+interface PostMortem { elapsed: number, commandsRun: number, scenario: string, leveledUp: boolean, stars: number }
 interface TerminalEntry { cmd: string, output: string, isError: boolean }
+interface LevelStats { stars: number, bestTime: number }
+interface ModelOption { id: string, label: string, approx_hardware: string, notes?: string }
+interface AppSettings { selected_model: string, model_options: ModelOption[] }
+interface OllamaStatus {
+  running: boolean
+  api_compatible: boolean
+  installed_models: string[]
+  selected_model: string
+  selected_model_installed: boolean
+  error?: string | null
+}
 
 const API = 'http://127.0.0.1:8000'
 
@@ -20,16 +57,45 @@ function fmt(secs: number) {
   return `${m}:${s}`
 }
 
-function diffBadge(d: string) { return d === 'Beginner' ? 'badge-green' : d === 'Intermediate' ? 'badge-yellow' : 'badge-red' }
+function diffBadge(d: string) { return d === 'Beginner' ? 'badge-green' : d === 'Intermediate' ? 'badge-yellow' : d === 'Expert' ? 'badge-purple' : 'badge-red' }
 function podStatusColor(status: string) { return status === 'Running' ? '#10b981' : status === 'Pending' ? '#f59e0b' : '#ef4444' }
+
+// Renders stars based on a 1-3 number
+function StarDisplay({ count }: { count: number }) {
+  if (count === 0) return null;
+  return <span style={{ letterSpacing: '2px', textShadow: '0 0 5px rgba(250, 204, 21, 0.5)' }}>{'⭐'.repeat(count)}</span>;
+}
+
+function isModelInstalled(modelId: string, installed: string[]) {
+  if (!modelId) return false
+  if (installed.includes(modelId)) return true
+  if (!modelId.includes(':') && installed.includes(`${modelId}:latest`)) return true
+  if (modelId.endsWith(':latest') && installed.includes(modelId.split(':')[0])) return true
+  return false
+}
 
 export default function App() {
   const [scenarios, setScenarios] = useState<ScenarioMeta[]>([])
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [clusterStatus, setClusterStatus] = useState<ClusterStatus>({ active: false, scenario_key: null, scenario_name: null, elapsed_seconds: 0, events: [], pods: [] })
 
+  // --- PROGRESSION & STATS STATE ---
+  const [playerLevel, setPlayerLevel] = useState<number>(() => {
+    const saved = localStorage.getItem('kubeQuest_level')
+    return saved ? parseInt(saved, 10) : 1
+  })
+  const [levelStats, setLevelStats] = useState<Record<string, LevelStats>>(() => {
+    const saved = localStorage.getItem('kubeQuest_stats')
+    return saved ? JSON.parse(saved) : {}
+  })
+  const [showBriefing, setShowBriefing] = useState(false)
+
   // Smooth Clock State
   const [localElapsed, setLocalElapsed] = useState(0)
+  
+  // Traffic & Victory State
+  const [victoryTriggered, setVictoryTriggered] = useState(false)
+  const isHealingRef = useRef(false)
 
   // Chat State
   const [messages, setMessages] = useState<Message[]>([])
@@ -45,23 +111,53 @@ export default function App() {
   // Terminal Arrow History State
   const [cmdStack, setCmdStack] = useState<string[]>([])
   const [historyIndex, setHistoryIndex] = useState<number>(-1)
-  const [draftInput, setDraftInput] = useState<string>('') // Saves what you were typing before hitting 'Up'
+  const [draftInput, setDraftInput] = useState<string>('')
 
   const [postMortem, setPostMortem] = useState<PostMortem | null>(null)
+  const [settings, setSettings] = useState<AppSettings>({ selected_model: 'gemma4:e2b', model_options: [] })
+  const [savingModel, setSavingModel] = useState(false)
+  const [showModelSettings, setShowModelSettings] = useState(false)
+  const [modelDraft, setModelDraft] = useState('gemma4:e2b')
+  const [useCustomModel, setUseCustomModel] = useState(false)
+  const [customModelDraft, setCustomModelDraft] = useState('')
+  const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null)
+  const [checkingOllama, setCheckingOllama] = useState(false)
 
   const chatEndRef = useRef<HTMLDivElement>(null)
   const terminalEndRef = useRef<HTMLDivElement>(null)
 
+  // Derived state
+  const selectedScenario = scenarios.find(s => s.key === selectedKey)
+  const activeScenario = scenarios.find(s => s.key === clusterStatus.scenario_key)
+  const selectedModelMeta = settings.model_options.find(m => m.id === settings.selected_model)
+  const draftModelMeta = settings.model_options.find(m => m.id === modelDraft)
+  const selectedModelLabel = selectedModelMeta?.label || settings.selected_model
+  const modalTargetModel = (useCustomModel ? customModelDraft : modelDraft).trim()
+  const modalTargetInstalled = isModelInstalled(modalTargetModel, ollamaStatus?.installed_models || [])
+
   // Polling & Setup
   useEffect(() => { fetch(`${API}/api/scenarios`).then(r => r.json()).then(setScenarios).catch(() => { }) }, [])
+  useEffect(() => {
+    fetch(`${API}/api/settings`)
+      .then(r => r.json())
+      .then((data: AppSettings) => {
+        setSettings(data)
+        setModelDraft(data.selected_model)
+      })
+      .catch(() => { })
+  }, [])
   
   useEffect(() => {
     const poll = () => {
       fetch(`${API}/api/status`).then(r => r.json()).then((s: ClusterStatus) => {
         setClusterStatus(s); 
         if (!s.active && clusterStatus.active) setSelectedKey(null);
-        // Sync clock, but prevent it from jumping backwards due to slight network delays
         if (s.active) setLocalElapsed(prev => Math.max(prev, s.elapsed_seconds));
+
+        // Auto Victory Trigger
+        if (s.active && s.victory && !isHealingRef.current && !victoryTriggered) {
+          setVictoryTriggered(true);
+        }
       }).catch(() => { })
     }
     poll(); 
@@ -69,13 +165,25 @@ export default function App() {
     return () => clearInterval(id)
   }, [clusterStatus.active])
 
-  // Smooth ticking interval for the clock
+  useEffect(() => {
+    if (victoryTriggered && !isHealingRef.current) {
+      if (!loadingChat) {
+        isHealingRef.current = true;
+        sendChat(undefined, true);
+      }
+    }
+  }, [victoryTriggered, loadingChat])
+
   useEffect(() => {
     let id: ReturnType<typeof setInterval>;
     if (clusterStatus.active) {
-      id = setInterval(() => setLocalElapsed(prev => prev + 1), 1000);
+      id = setInterval(() => {
+        setLocalElapsed(prev => prev + 1);
+      }, 1000);
     } else {
       setLocalElapsed(0);
+      setVictoryTriggered(false);
+      isHealingRef.current = false;
     }
     return () => clearInterval(id);
   }, [clusterStatus.active])
@@ -84,8 +192,14 @@ export default function App() {
   useEffect(() => { terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [terminalHistory, loadingTerminal])
 
   // Actions
-  const injectChaos = async () => {
+  const handleStartClick = () => {
     if (!selectedKey) return
+    setShowBriefing(true)
+  }
+
+  const confirmAndInject = async () => {
+    if (!selectedKey) return
+    setShowBriefing(false)
     try {
       const res = await fetch(`${API}/api/chaos/inject`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scenario: selectedKey }) })
       const data = await res.json()
@@ -93,7 +207,7 @@ export default function App() {
 
       setTerminalHistory([{ cmd: 'System initialized.', output: `Loaded scenario: ${data.scenario}`, isError: false }])
       setCommandsRunCount(0)
-      setCmdStack([]) // Clear terminal history on new game
+      setCmdStack([])
 
       const initMessages: Message[] = []
       if (data.briefing) initMessages.push({ role: 'assistant', content: stripThinking(data.briefing.answer) })
@@ -102,10 +216,57 @@ export default function App() {
     } catch (e) { alert('Cannot reach backend') }
   }
 
+  const calculateStars = (time: number, cmds: number, difficulty: string) => {
+    if (cmds === 0) return 0; // Prevent instant 3-star exploits
+
+    let multi = 1;
+    if (difficulty === 'Intermediate') multi = 1.5;
+    if (difficulty === 'Advanced') multi = 2.5;
+    if (difficulty === 'Expert') multi = 4.0;
+
+    if (time <= 120 * multi && cmds <= Math.ceil(8 * multi)) return 3;
+    if (time <= 300 * multi && cmds <= Math.ceil(20 * multi)) return 2;
+    return 1;
+  }
+
   const healCluster = async () => {
+    if (!clusterStatus.scenario_key) return;
+    const currentKey = clusterStatus.scenario_key;
+
     try {
       await fetch(`${API}/api/chaos/cleanup`, { method: 'POST' })
-      setPostMortem({ elapsed: localElapsed, commandsRun: commandsRunCount, scenario: clusterStatus.scenario_name ?? '' })
+      
+      let leveledUp = false;
+      if (activeScenario && activeScenario.order >= playerLevel) {
+        const nextLevel = activeScenario.order + 1;
+        setPlayerLevel(nextLevel);
+        localStorage.setItem('kubeQuest_level', nextLevel.toString());
+        leveledUp = true;
+      }
+
+      const earnedStars = calculateStars(localElapsed, commandsRunCount, activeScenario?.difficulty || 'Beginner');
+      
+      // Update Stats
+      setLevelStats(prev => {
+        const currentStats = prev[currentKey] || { stars: 0, bestTime: Infinity };
+        const newStats = {
+          ...prev,
+          [currentKey]: {
+            stars: Math.max(currentStats.stars, earnedStars),
+            bestTime: Math.min(currentStats.bestTime, localElapsed)
+          }
+        };
+        localStorage.setItem('kubeQuest_stats', JSON.stringify(newStats));
+        return newStats;
+      });
+
+      setPostMortem({ 
+        elapsed: localElapsed, 
+        commandsRun: commandsRunCount, 
+        scenario: clusterStatus.scenario_name ?? '',
+        leveledUp,
+        stars: earnedStars
+      })
     } catch (e) { alert('Cannot reach backend') }
   }
 
@@ -140,7 +301,6 @@ export default function App() {
     const cmd = terminalInput.trim()
     setTerminalInput('')
     
-    // Save to command history stack
     setCmdStack(prev => [...prev, cmd])
     setHistoryIndex(-1)
     setDraftInput('')
@@ -169,27 +329,107 @@ export default function App() {
   }
 
   // --- CHAT LOGIC ---
-  const sendChat = async (overrideMsg?: string) => {
+  const sendChat = async (overrideMsg?: string, isVictoryReview: boolean = false) => {
     const text = overrideMsg || chatInput
-    if (!text.trim() || loadingChat) return
+    if ((!text.trim() && !isVictoryReview) || loadingChat) return
     setChatInput(''); setLoadingChat(true)
 
-    const nextMessages = [...messages, { role: 'user', content: text } as Message]
-    setMessages(nextMessages)
+    let nextMessages = messages;
+    if (!isVictoryReview) {
+       nextMessages = [...messages, { role: 'user', content: text } as Message]
+       setMessages(nextMessages)
+    } else {
+       nextMessages = [...messages, { role: 'user', content: '[SYSTEM_INTERNAL: The user has successfully triggered the victory condition. Please generate the victory review according to the system prompt instructions.]' } as Message]
+    }
 
-    // Compile recent terminal context for the AI
-    const recentTerminal = terminalHistory.slice(-5).map(t => `$ ${t.cmd}\n${t.output}`).join('\n\n')
+
+
+    const recentTerminal = terminalHistory.slice(-5).map(t => {
+      const out = t.output.length > 500 ? t.output.slice(0, 500) + '\n...[output truncated for brevity]' : t.output;
+      return `$ ${t.cmd}\n${out}`;
+    }).join('\n\n')
 
     try {
       const res = await fetch(`${API}/api/chat`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ history: nextMessages, terminal_history: recentTerminal }),
+        body: JSON.stringify({ 
+           history: nextMessages, 
+           terminal_history: recentTerminal,
+           is_victory_review: isVictoryReview
+        }),
       })
       const data = await res.json()
+      if (!res.ok) {
+        const detail = data?.detail || 'Mentor request failed.'
+        setMessages(p => [...p, { role: 'assistant', content: `⚠️ ${detail}` }])
+        return
+      }
       setMessages(p => [...p, { role: 'assistant', content: stripThinking(data.answer) }])
+      
+      if (isVictoryReview) {
+        setTimeout(() => healCluster(), 3000);
+      }
     } catch (e) {
       setMessages(p => [...p, { role: 'assistant', content: `(Connection Error) I can't reach the server right now.` }])
     } finally { setLoadingChat(false) }
+  }
+
+  const updateModel = async (modelId: string) => {
+    const nextModel = modelId.trim()
+    if (!nextModel || savingModel) return false
+    setSavingModel(true)
+    try {
+      const res = await fetch(`${API}/api/settings/model`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: nextModel })
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        alert(data.detail || 'Failed to update model')
+        return false
+      }
+      setSettings(prev => ({ ...prev, selected_model: data.selected_model }))
+      setModelDraft(data.selected_model)
+      return true
+    } catch {
+      alert('Cannot update model right now.')
+      return false
+    } finally {
+      setSavingModel(false)
+    }
+  }
+
+  const refreshOllamaStatus = async () => {
+    setCheckingOllama(true)
+    try {
+      const res = await fetch(`${API}/api/settings/ollama`)
+      const data = await res.json()
+      if (!res.ok) {
+        setOllamaStatus(null)
+        return
+      }
+      setOllamaStatus(data)
+    } catch {
+      setOllamaStatus(null)
+    } finally {
+      setCheckingOllama(false)
+    }
+  }
+
+  const openModelSettings = () => {
+    setModelDraft(settings.selected_model)
+    setUseCustomModel(false)
+    setCustomModelDraft('')
+    setShowModelSettings(true)
+    refreshOllamaStatus()
+  }
+
+  const applyModelFromModal = async () => {
+    const targetModel = useCustomModel ? customModelDraft : modelDraft
+    const ok = await updateModel(targetModel)
+    await refreshOllamaStatus()
+    if (ok) setShowModelSettings(false)
   }
 
   return (
@@ -198,6 +438,10 @@ export default function App() {
         <div className="topbar-brand">
           <span className="brand-icon">⚡</span>
           <span className="brand-name">KubeQuest: Infra Simulator</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <span style={{ color: '#9ca3af', fontSize: '0.8rem' }}>Model: {selectedModelLabel}</span>
+          <button className="btn" style={{ padding: '6px 10px' }} onClick={openModelSettings}>Model Settings</button>
         </div>
         <div className="topbar-status">
           <span className={`pulse-dot ${clusterStatus.active ? 'pulse-red' : 'pulse-green'}`} />
@@ -214,21 +458,31 @@ export default function App() {
           <section className="panel-section">
             <h2 className="section-title">Select Level</h2>
             <div className="scenario-list">
-              {scenarios.map(s => (
-                <button
-                  key={s.key} disabled={clusterStatus.active} onClick={() => setSelectedKey(s.key)}
-                  className={`scenario-card ${selectedKey === s.key ? 'scenario-card--selected' : ''} ${clusterStatus.active ? 'scenario-card--disabled' : ''}`}
-                >
-                  <span className="scenario-icon">{s.icon}</span>
-                  <div className="scenario-info">
-                    <span className="scenario-name">{s.name}</span>
-                    <span className={`badge ${diffBadge(s.difficulty)}`}>{s.difficulty}</span>
-                  </div>
-                </button>
-              ))}
+              {scenarios.map(s => {
+                const isLocked = s.order > playerLevel;
+                const stats = levelStats[s.key];
+                return (
+                  <button
+                    key={s.key} 
+                    disabled={clusterStatus.active || isLocked} 
+                    onClick={() => setSelectedKey(s.key)}
+                    className={`scenario-card ${selectedKey === s.key ? 'scenario-card--selected' : ''} ${clusterStatus.active || isLocked ? 'scenario-card--disabled' : ''}`}
+                    style={isLocked ? { opacity: 0.6, cursor: 'not-allowed', filter: 'grayscale(100%)' } : {}}
+                  >
+                    <span className="scenario-icon">{isLocked ? '🔒' : s.icon}</span>
+                    <div className="scenario-info" style={{ width: '100%' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span className="scenario-name">{s.name}</span>
+                        {stats && <StarDisplay count={stats.stars} />}
+                      </div>
+                      <span className={`badge ${diffBadge(s.difficulty)}`}>{s.difficulty}</span>
+                    </div>
+                  </button>
+                )
+              })}
             </div>
             <div className="chaos-actions" style={{ marginTop: '1rem' }}>
-              <button className="btn btn-danger" disabled={!selectedKey || clusterStatus.active} onClick={injectChaos}>▶ Start Simulator</button>
+              <button className="btn btn-danger" disabled={!selectedKey || clusterStatus.active} onClick={handleStartClick}>▶ Start Simulator</button>
               <button className="btn btn-heal" disabled={!clusterStatus.active} onClick={healCluster}>🏁 Finish Level</button>
             </div>
           </section>
@@ -280,14 +534,14 @@ export default function App() {
               <div ref={chatEndRef} />
             </div>
             <form className="chat-form" onSubmit={e => { e.preventDefault(); sendChat() }}>
-              <input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)} placeholder="Ask your mentor a question..." disabled={loadingChat || !clusterStatus.active} />
+              <input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)} placeholder="Ask your mentor a question..." disabled={loadingChat} />
               <button type="submit" disabled={!chatInput || loadingChat}>Send</button>
             </form>
           </main>
 
           {/* BOTTOM: THE REAL TERMINAL */}
           <main className="panel real-terminal-panel">
-            <div className="panel-header dark">
+            <div className="panel-header dark" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <h3>🖥️ Sandbox Terminal</h3>
             </div>
             <div className="terminal-screen">
@@ -307,7 +561,7 @@ export default function App() {
                 value={terminalInput} 
                 onChange={e => setTerminalInput(e.target.value)} 
                 onKeyDown={handleTerminalKeyDown}
-                placeholder={clusterStatus.active ? "kubectl get pods..." : "Wait for scenario to start..."} 
+                placeholder={clusterStatus.active ? "Ask your mentor for your next debugging step..." : "Wait for scenario to start..."} 
                 disabled={loadingTerminal || !clusterStatus.active} 
                 autoFocus 
               />
@@ -317,17 +571,143 @@ export default function App() {
         </div>
       </div>
 
+      {/* BRIEFING MODAL */}
+      {showBriefing && selectedScenario && (
+        <div className="modal-overlay" onClick={() => setShowBriefing(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '600px', textAlign: 'left' }}>
+            <h2 style={{ marginBottom: '1rem', borderBottom: '1px solid #374151', paddingBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span>{selectedScenario.icon}</span> Briefing: {selectedScenario.name}
+            </h2>
+            <div style={{ lineHeight: '1.6', color: '#d1d5db', marginBottom: '1.5rem' }}>
+              <ReactMarkdown>{selectedScenario.tutorial_text}</ReactMarkdown>
+            </div>
+            <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end' }}>
+              <button className="btn" style={{ background: 'transparent', border: '1px solid #4b5563' }} onClick={() => setShowBriefing(false)}>Cancel</button>
+              <button className="btn btn-danger" onClick={confirmAndInject}>Acknowledge & Start Level</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODEL SETTINGS MODAL */}
+      {showModelSettings && (
+        <div className="modal-overlay" onClick={() => setShowModelSettings(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '640px', textAlign: 'left' }}>
+            <h2 style={{ marginBottom: '1rem', borderBottom: '1px solid #374151', paddingBottom: '0.5rem' }}>
+              Model Settings
+            </h2>
+            <p style={{ color: '#9ca3af', marginBottom: '1rem' }}>
+              Choose from known Ollama model IDs first. You can optionally use a custom model id if needed.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'center', marginBottom: '0.75rem' }}>
+              <div style={{ fontSize: '0.85rem', color: '#9ca3af' }}>
+                Ollama status: {checkingOllama ? 'Checking...' : (ollamaStatus?.running ? 'Running' : 'Not reachable')}
+                {ollamaStatus?.running && !ollamaStatus.api_compatible && ' (API incompatible)'}
+              </div>
+              <button className="btn" style={{ padding: '6px 10px' }} onClick={refreshOllamaStatus} disabled={checkingOllama}>
+                Refresh Check
+              </button>
+            </div>
+            {ollamaStatus?.error && (
+              <div style={{ marginBottom: '0.75rem', color: '#fecaca', background: '#3f1d1d', border: '1px solid #7f1d1d', borderRadius: '8px', padding: '10px' }}>
+                {ollamaStatus.error}
+              </div>
+            )}
+
+            <label style={{ display: 'block', color: '#cbd5e1', marginBottom: '0.4rem' }}>Available Ollama Models</label>
+            <select
+              value={modelDraft}
+              onChange={e => setModelDraft(e.target.value)}
+              disabled={savingModel}
+              style={{ width: '100%', marginBottom: '0.75rem', background: '#0f172a', color: '#e5e7eb', border: '1px solid #334155', borderRadius: '6px', padding: '10px' }}
+            >
+              {settings.model_options.map(opt => (
+                <option key={opt.id} value={opt.id}>{opt.label} ({opt.id})</option>
+              ))}
+            </select>
+
+            <div style={{ marginBottom: '1rem', fontSize: '0.9rem', color: '#cbd5e1', background: '#1f2937', border: '1px solid #374151', borderRadius: '8px', padding: '10px' }}>
+              <div><strong>Current:</strong> {settings.selected_model}</div>
+              <div><strong>Selected:</strong> {useCustomModel ? customModelDraft || '(custom model id)' : modelDraft}</div>
+              <div><strong>Approx Hardware:</strong> {useCustomModel ? 'Custom model: check ollama run requirements for your chosen model.' : (draftModelMeta?.approx_hardware || 'Unknown')}</div>
+              <div><strong>Installed:</strong> {modalTargetModel ? (modalTargetInstalled ? 'Yes' : 'No') : 'Unknown'}</div>
+              {!useCustomModel && draftModelMeta?.notes && (
+                <div><strong>Notes:</strong> {draftModelMeta.notes}</div>
+              )}
+            </div>
+            {!modalTargetInstalled && modalTargetModel && (
+              <div style={{ marginBottom: '1rem', color: '#fef3c7', background: '#3f2d0f', border: '1px solid #78350f', borderRadius: '8px', padding: '10px' }}>
+                Model is not installed locally. Run: <code>ollama pull {modalTargetModel}</code>
+              </div>
+            )}
+            {ollamaStatus?.installed_models?.length ? (
+              <div style={{ marginBottom: '1rem', color: '#9ca3af', fontSize: '0.85rem' }}>
+                Installed models: {ollamaStatus.installed_models.join(', ')}
+              </div>
+            ) : (
+              <div style={{ marginBottom: '1rem', color: '#9ca3af', fontSize: '0.85rem' }}>
+                No installed model list detected yet.
+              </div>
+            )}
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#cbd5e1', marginBottom: '0.6rem' }}>
+              <input
+                type="checkbox"
+                checked={useCustomModel}
+                onChange={e => setUseCustomModel(e.target.checked)}
+                disabled={savingModel}
+              />
+              Use custom model id instead
+            </label>
+
+            {useCustomModel && (
+              <input
+                value={customModelDraft}
+                onChange={e => setCustomModelDraft(e.target.value)}
+                placeholder="Example: gemma4:custom-tag"
+                disabled={savingModel}
+                style={{ width: '100%', marginBottom: '1rem', background: '#0f172a', color: '#e5e7eb', border: '1px solid #334155', borderRadius: '6px', padding: '10px' }}
+              />
+            )}
+
+            <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end' }}>
+              <button className="btn" style={{ background: 'transparent', border: '1px solid #4b5563' }} onClick={() => setShowModelSettings(false)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-heal"
+                onClick={applyModelFromModal}
+                disabled={savingModel || (useCustomModel && !customModelDraft.trim())}
+              >
+                {savingModel ? 'Applying...' : 'Apply Model'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* POST MORTEM MODAL */}
       {postMortem && (
         <div className="modal-overlay" onClick={() => setPostMortem(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
-            <h2>🎉 Level Complete!</h2>
+            <div style={{ fontSize: '3rem', marginBottom: '0.5rem' }}>
+              <StarDisplay count={postMortem.stars} />
+            </div>
+            {postMortem.leveledUp ? (
+              <h2 style={{ color: '#10b981', fontSize: '2rem' }}>🌟 Level Up!</h2>
+            ) : (
+              <h2>🎉 Scenario Complete!</h2>
+            )}
             <p className="modal-scenario">{postMortem.scenario}</p>
             <div className="mortem-stats">
               <div className="mortem-stat"><span className="stat-label">Time Elapsed</span><span className="stat-val">{fmt(postMortem.elapsed)}</span></div>
               <div className="mortem-stat"><span className="stat-label">Commands Run</span><span className="stat-val yellow">{postMortem.commandsRun}</span></div>
             </div>
-            <p style={{ marginBottom: '1.5rem', color: '#9ca3af', textAlign: 'center' }}>Great job debugging this incident! Ask your mentor for a detailed breakdown, or start the next level.</p>
+            {postMortem.leveledUp ? (
+              <p style={{ marginBottom: '1.5rem', color: '#9ca3af', textAlign: 'center' }}>You learned new skills and unlocked the next scenario! Keep up the great work.</p>
+            ) : (
+              <p style={{ marginBottom: '1.5rem', color: '#9ca3af', textAlign: 'center' }}>Great job debugging this incident! Ask your mentor for a detailed breakdown, or replay{postMortem.stars < 3 ? ' to get 3 stars' : ''}.</p>
+            )}
             <button className="btn btn-heal" onClick={() => setPostMortem(null)}>Continue Training</button>
           </div>
         </div>

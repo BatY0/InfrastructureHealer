@@ -31,12 +31,16 @@ class Message(BaseModel):
 class ChatRequest(BaseModel):
     history: List[Message]
     terminal_history: str = ""
+    is_victory_review: Optional[bool] = False
 
 class ExecuteRequest(BaseModel):
     command: str
 
 class ChaosInjectRequest(BaseModel):
     scenario: str # "oom" | "connection-leak" | "zombie" | "poisoned-update"
+
+class UpdateModelRequest(BaseModel):
+    model: str
 
 
 # ---------------------------------------------------------------------------
@@ -90,17 +94,43 @@ async def chaos_cleanup():
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/settings")
+def get_settings():
+    return agent.get_settings()
+
+@app.get("/api/settings/ollama")
+def get_ollama_status():
+    return agent.get_ollama_status()
+
+@app.post("/api/settings/model")
+def update_model(request: UpdateModelRequest):
+    try:
+        agent.set_model(request.model)
+        runtime = agent.get_ollama_status()
+        return {
+            "status": "updated",
+            "selected_model": request.model.strip(),
+            "selected_model_installed": runtime.get("selected_model_installed", False)
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 @app.post("/api/chat")
 async def chat_endpoint(request: ChatRequest):
     try:
         history = [m.model_dump() for m in request.history]
         scenario_context = None
+        taught_commands = None
+        victory_condition = None
         status = chaos_injector.get_status()
         
         if status["active"] and status["scenario_key"]:
             key = status["scenario_key"]
             meta = chaos_injector.SCENARIOS[key]
+            taught_commands = meta.get("taught_commands", [])
+            victory_condition = meta.get("victory_condition", None)
+            
             pod_lines = "\n".join(
                 f"  - {p['name']}: {p['status']} (restarts={p['restarts']})"
                 for p in status["pods"]
@@ -113,18 +143,23 @@ async def chat_endpoint(request: ChatRequest):
                 f"Pod statuses:\n{pod_lines}"
             )
             
-        # Pass the terminal history to the engine!
+        # Pass the terminal history, taught commands, and victory condition to the engine
         response = agent.generate_response(
             chat_history=history, 
             terminal_history=request.terminal_history,
-            scenario_context=scenario_context
+            scenario_context=scenario_context,
+            taught_commands=taught_commands,
+            victory_condition=victory_condition,
+            is_victory_review=request.is_victory_review
         )
+        if response.get("verified_by_llm"):
+            print("LLM verified the goal! Setting state.llm_verified = True")
+            chaos_injector.state.llm_verified = True
         return response
     except Exception as e:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/api/command/execute")
 async def execute_command(request: ExecuteRequest):
