@@ -1,12 +1,12 @@
-# KubeQuest: AI Infrastructure Simulator (Gemma 4)
+# InfrastructureHealer: AI Infrastructure Simulator (Gemma 4)
 
-KubeQuest is an incident-response training simulator that teaches practical Kubernetes debugging through guided chaos scenarios.  
+InfrastructureHealer is an incident-response training simulator that teaches practical Kubernetes debugging through guided chaos scenarios.  
 Learners investigate real failure patterns in a sandbox cluster while an AI mentor (Gemma 4) provides progressive hints instead of instant answers.
 
 ## Why This Project
 
 Many learners can run commands but struggle with operational reasoning under pressure.  
-KubeQuest trains a repeatable debugging method:
+InfrastructureHealer trains a repeatable debugging method:
 
 - Observe system state
 - Form a hypothesis
@@ -17,7 +17,7 @@ This focuses on practical digital reliability skills for students, junior DevOps
 
 ## Impact Narrative
 
-KubeQuest improves infrastructure learning outcomes by turning abstract Kubernetes concepts into realistic incident drills.  
+InfrastructureHealer improves infrastructure learning outcomes by turning abstract Kubernetes concepts into realistic incident drills.  
 Learners practice diagnosing failures from live evidence, applying remediation safely, and validating recovery in a guided loop.
 
 Target outcomes:
@@ -58,10 +58,12 @@ Target outcomes:
 
 ## Model Settings
 
-- Users can switch mentor models directly from the frontend.
+- Users can switch mentor models from the **Model Settings** modal in the frontend.
 - The backend persists model choice in `model_settings.json`.
 - Each preset includes approximate hardware guidance to help users choose a model that matches their machine.
-- Advanced users can enter any custom Ollama model id from the UI.
+- Advanced users can enable a custom model id option in the modal.
+- The app checks Ollama runtime status and shows whether the selected model is installed.
+- If a model is missing, the UI shows the exact pull command to run.
 
 ## Quick Start
 
@@ -101,10 +103,11 @@ npm run dev
 
 Frontend runs on `http://localhost:5173`.
 
-### 5) Pull and run Gemma 4 in Ollama
+### 5) Pull and run Gemma 4 models in Ollama
 
 ```bash
 ollama pull gemma4:e2b
+ollama pull gemma4:e4b
 ```
 
 Ensure Ollama is running before opening mentor chat.
@@ -115,6 +118,9 @@ Ensure Ollama is running before opening mentor chat.
 - `GET /api/status` - live scenario and pod status
 - `POST /api/chaos/inject` - start selected scenario
 - `POST /api/chaos/cleanup` - end/reset current scenario
+- `GET /api/settings` - current model settings and available model options
+- `POST /api/settings/model` - update selected model
+- `GET /api/settings/ollama` - Ollama health check + installed model list
 - `POST /api/chat` - mentor response generation
 - `POST /api/command/execute` - safe terminal execution
 
@@ -147,6 +153,12 @@ Ensure Ollama is running before opening mentor chat.
 
 Tip: keep one fallback profile ready (`Fast`) before live judging sessions in case of resource pressure.
 
+## Troubleshooting
+
+- **Chat returns Ollama 404/500:** open **Model Settings** and use **Refresh Check**.
+- **Selected model not installed:** run `ollama pull <model-id>` (same command is shown in UI).
+- **Ollama not reachable:** ensure Ollama is running on `localhost:11434`.
+- **Changed code but old behavior persists:** restart backend with `uvicorn main:app --reload`.
 
 ## License
 

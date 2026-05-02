@@ -1,6 +1,6 @@
-# KubeQuest Frontend
+# InfrastructureHealer Frontend
 
-React + TypeScript frontend for the KubeQuest AI infrastructure simulator.
+React + TypeScript frontend for the InfrastructureHealer AI infrastructure simulator.
 
 ## Responsibilities
 

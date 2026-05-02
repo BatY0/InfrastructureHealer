@@ -81,11 +81,11 @@ export default function App() {
 
   // --- PROGRESSION & STATS STATE ---
   const [playerLevel, setPlayerLevel] = useState<number>(() => {
-    const saved = localStorage.getItem('kubeQuest_level')
+    const saved = localStorage.getItem('infrastructureHealer_level')
     return saved ? parseInt(saved, 10) : 1
   })
   const [levelStats, setLevelStats] = useState<Record<string, LevelStats>>(() => {
-    const saved = localStorage.getItem('kubeQuest_stats')
+    const saved = localStorage.getItem('infrastructureHealer_stats')
     return saved ? JSON.parse(saved) : {}
   })
   const [showBriefing, setShowBriefing] = useState(false)
@@ -240,7 +240,7 @@ export default function App() {
       if (activeScenario && activeScenario.order >= playerLevel) {
         const nextLevel = activeScenario.order + 1;
         setPlayerLevel(nextLevel);
-        localStorage.setItem('kubeQuest_level', nextLevel.toString());
+        localStorage.setItem('infrastructureHealer_level', nextLevel.toString());
         leveledUp = true;
       }
 
@@ -256,7 +256,7 @@ export default function App() {
             bestTime: Math.min(currentStats.bestTime, localElapsed)
           }
         };
-        localStorage.setItem('kubeQuest_stats', JSON.stringify(newStats));
+        localStorage.setItem('infrastructureHealer_stats', JSON.stringify(newStats));
         return newStats;
       });
 
@@ -437,7 +437,7 @@ export default function App() {
       <header className="topbar">
         <div className="topbar-brand">
           <span className="brand-icon">⚡</span>
-          <span className="brand-name">KubeQuest: Infra Simulator</span>
+          <span className="brand-name">InfrastructureHealer: Infra Simulator</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           <span style={{ color: '#9ca3af', fontSize: '0.8rem' }}>Model: {selectedModelLabel}</span>

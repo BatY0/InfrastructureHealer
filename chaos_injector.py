@@ -1,7 +1,7 @@
 """
 chaos_injector.py
 -----------------
-Manages the scenarios for KubeQuest.
+Manages the scenarios for InfrastructureHealer.
 Each scenario tracks its own state so the frontend can poll /api/status
 for live metrics.
 """
